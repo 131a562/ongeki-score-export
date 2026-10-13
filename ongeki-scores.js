@@ -48,7 +48,9 @@ const rankBonus = ts >= 1007500 ? 0.3 : ts >= 1000000 ? 0.2 : ts >= 990000 ? 0.1
 const lampBonus = { "AB+": 0.35, AB: 0.3, FC: 0.1 }[s.lamp] || 0;
 return floor3(base + rankBonus + lampBonus + (s.full_bell ? 0.05 : 0));
 }
-const psRating = (c, star) => floor3((Math.min(star, 5) * c * c) / 1000);
+const psRating = (c, star) => (Math.min(star, 5) * c * c) / 1000;
+const tsUnits = (r) => Math.round(r * 1000) * 100;
+const psUnits = (c, star) => Math.min(star, 5) * Math.round(c * 10) ** 2;
 function parseDifficulty(doc, diff) {
 const container = doc.querySelector(".container3") || doc.body;
 if (!container) return [];
@@ -220,12 +222,18 @@ new10.forEach((s, i) => (s.frame = `新曲${i + 1}`));
 best50.forEach((s, i) => (s.frame = `B${i + 1}`));
 ps50.forEach((s, i) => (s.frame += (s.frame ? " / " : "") + `P${i + 1}`));
 const sum = (arr, k) => arr.reduce((a, s) => a + s[k], 0);
-const ratingInfo = {
-new10: sum(new10, "rating"),
-best50: sum(best50, "rating"),
-ps50: sum(ps50, "ps_rating"),
+const units = {
+new10: new10.reduce((a, s) => a + tsUnits(s.rating), 0),
+best50: best50.reduce((a, s) => a + tsUnits(s.rating), 0),
+ps50: ps50.reduce((a, s) => a + psUnits(s.const, s.platinum_star), 0),
 };
-ratingInfo.total = (ratingInfo.new10 + ratingInfo.best50 + ratingInfo.ps50) / 50;
+const ratingInfo = {
+new10: units.new10 / 1e5,
+best50: units.best50 / 1e5,
+ps50: units.ps50 / 1e5,
+total: Math.floor((units.new10 + units.best50 + units.ps50) / 5000) / 1000,
+exact: (units.new10 + units.best50 + units.ps50) / 50 / 1e5,
+};
 const levelKey = (lv) => parseFloat(lv) + (lv.endsWith("+") ? 0.5 : 0);
 const levels = [...new Set(all.map((s) => s.level).filter(Boolean))]
 .sort((a, b) => levelKey(b) - levelKey(a));
@@ -380,14 +388,14 @@ ctx.textAlign = "left";
 const main = mode === "ps" ? s.ps_rating : s.rating;
 const sub = mode === "ps"
 ? `rating ${s.rating > 0 ? s.rating.toFixed(3) : "—"}`
-: `P-rate ${s.ps_rating > 0 ? s.ps_rating.toFixed(3) : "—"}`;
+: `P-rate ${s.ps_rating > 0 ? fmtPs(s.ps_rating) : "—"}`;
 ctx.font = f(600, 12);
 ctx.fillStyle = C.muted;
 ctx.fillText(sub, L, y + 114);
 ctx.textAlign = "right";
 ctx.font = f(800, 22);
 ctx.fillStyle = main > 0 ? (mode === "ps" ? C.plat : C.accent) : C.muted;
-ctx.fillText(main > 0 ? main.toFixed(3) : "—", R, y + 115);
+ctx.fillText(main > 0 ? (mode === "ps" ? fmtPs(main) : main.toFixed(3)) : "—", R, y + 115);
 ctx.textAlign = "left";
 }
 async function drawImage(title, subtitle, stats, sections) {
@@ -469,16 +477,17 @@ throw e;
 }
 }
 const stamp = new Date().toISOString().slice(0, 10);
+const fmtPs = (v) => v.toFixed(5).replace(/(\.\d{3}\d*?)0+$/, "$1");
 const avg = (arr, k) => (arr.length ? sum(arr, k) / arr.length : 0);
 const ratingStats = () => [
 ["新曲枠", avg(new10, "rating").toFixed(3), `${new10.length}曲 合计 ${ratingInfo.new10.toFixed(2)}`],
 ["ベスト枠", avg(best50, "rating").toFixed(3), `${best50.length}曲 合计 ${ratingInfo.best50.toFixed(2)}`],
-["P-SCORE枠", ratingInfo.ps50.toFixed(3), `${ps50.length}曲 · ÷50 = ${(ratingInfo.ps50 / 50).toFixed(3)}`],
+["P-SCORE枠", fmtPs(ratingInfo.ps50), `${ps50.length}曲 · ÷50 = ${(ratingInfo.ps50 / 50).toFixed(6)}`],
 ];
 const b50Image = () =>
 drawImage(
 `Rating ${ratingInfo.total.toFixed(3)}`,
-`新曲枠 10 + ベスト枠 50 + P-SCORE枠 50，合计 ÷ 50`,
+`新曲枠 10 + ベスト枠 50 + P-SCORE枠 50，合计 ÷ 50 = ${ratingInfo.exact.toFixed(6)}（截断到小数点后 3 位）`,
 ratingStats(),
 [
 { name: "新曲枠", note: `${latestVersion} · 平均 ${avg(new10, "rating").toFixed(3)}`, rows: new10, label: (s, i) => `#${i + 1}` },
@@ -487,10 +496,10 @@ ratingStats(),
 );
 const p50Image = () =>
 drawImage(
-`P-SCORE ${ratingInfo.ps50.toFixed(3)}`,
+`P-SCORE ${fmtPs(ratingInfo.ps50)}`,
 `プラチナスコア枠：☆数 × 定数² ÷ 1000，取前 50`,
 ratingStats(),
-[{ name: "P-SCORE枠", note: `合计 ${ratingInfo.ps50.toFixed(3)} · 最低 ${ps50.length ? ps50[ps50.length - 1].ps_rating.toFixed(3) : "—"}`, rows: ps50, label: (s, i) => `P${i + 1}`, mode: "ps" }]
+[{ name: "P-SCORE枠", note: `合计 ${fmtPs(ratingInfo.ps50)} · 最低 ${ps50.length ? fmtPs(ps50[ps50.length - 1].ps_rating) : "—"}`, rows: ps50, label: (s, i) => `P${i + 1}`, mode: "ps" }]
 );
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const csvCell = (s) => (/[",\n]/.test(String(s)) ? `"${String(s).replace(/"/g, '""')}"` : String(s));
@@ -562,7 +571,8 @@ rows.map((r) => `<tr${r.frame && /^(B|新曲)/.test(r.frame) ? ' style="backgrou
 let v = r[k];
 if (v === true) v = "✓";
 else if (v === false || v == null) v = "";
-else if ((k === "rating" || k === "ps_rating") && typeof v === "number") v = v.toFixed(3);
+else if (k === "rating" && typeof v === "number") v = v.toFixed(3);
+else if (k === "ps_rating" && typeof v === "number") v = fmtPs(v);
 else if (k === "const" && typeof v === "number") v = v.toFixed(1);
 return `<td style="border:1px solid #ccc;padding:2px 6px">${esc(v)}</td>`;
 }).join("")}</tr>`).join("") +
