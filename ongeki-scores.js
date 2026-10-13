@@ -330,7 +330,22 @@ ctx.fillStyle = ink;
 ctx.fillText(text, x + px / 2, y + 1);
 return w;
 }
-const stars = (n) => "★".repeat(Math.min(n, 5)) + "☆".repeat(Math.max(0, 5 - Math.min(n, 5)));
+function drawStars(ctx, n, right, baseline, size = 11, gap = 2) {
+const total = 5 * size + 4 * gap;
+for (let i = 0; i < 5; i++) {
+const cx = right - total + i * (size + gap) + size / 2, cy = baseline - size / 2;
+ctx.beginPath();
+for (let k = 0; k < 10; k++) {
+const r = k % 2 ? size * 0.22 : size / 2;
+const a = -Math.PI / 2 + (k * Math.PI) / 5;
+ctx[k ? "lineTo" : "moveTo"](cx + r * Math.cos(a), cy + r * Math.sin(a));
+}
+ctx.closePath();
+ctx.fillStyle = i < Math.min(n, 5) ? C.star : C.line;
+ctx.fill();
+}
+return total;
+}
 function drawCard(ctx, s, label, x, y, jacket, mode) {
 const { CW, CH } = IMG;
 rrect(ctx, x, y, CW, CH, 10);
@@ -361,66 +376,55 @@ ctx.fillStyle = "#fff";
 ctx.fillText(label, x + 10, y + 19);
 const L = x + CH + 10, R = x + CW - 10, TW = R - L;
 ctx.textAlign = "left";
+const text = (t, tx, ty, font, color, maxW) => {
+ctx.font = font;
+ctx.fillStyle = color;
+const s2 = maxW != null ? fit(ctx, t, Math.max(0, maxW)) : t;
+if (maxW == null || maxW > 12) ctx.fillText(s2, tx, ty);
+return ctx.measureText(s2).width;
+};
+const textR = (t, ty, font, color, maxW) => { // 右对齐，返回宽度
+ctx.font = font;
+const s2 = fit(ctx, t, maxW);
+const w = ctx.measureText(s2).width;
+if (maxW > 12) {
+ctx.fillStyle = color;
+ctx.fillText(s2, R - w, ty);
+}
+return w;
+};
 const diffText = `${DIFF_SHORT[s.difficulty] || ""} ${s.const != null ? s.const.toFixed(1) : "?"}${s.const_unknown ? "?" : ""}`;
-let px = L + pill(ctx, diffText, L, y + 19, C[s.difficulty] || C.muted, 12) + 6;
-ctx.font = f(600, 12);
-ctx.fillStyle = C.muted;
-ctx.fillText(`Lv${s.level}`, px, y + 19);
-if (s.frame) {
-ctx.textAlign = "right";
-ctx.fillText(fit(ctx, s.frame, 90), R, y + 19);
-ctx.textAlign = "left";
-}
-ctx.font = f(700, 16);
-ctx.fillStyle = C.fg;
-ctx.fillText(fit(ctx, s.title, TW), L, y + 42);
-if (s.played) {
-ctx.font = f(800, 18);
-ctx.fillStyle = C.fg;
-const ts = s.technical_score.toLocaleString("en-US");
-ctx.fillText(ts, L, y + 66);
-const tw = ctx.measureText(ts).width;
-ctx.font = f(800, 14);
-ctx.fillStyle = C[s.rank] || C.muted;
-ctx.fillText(s.rank, L + tw + 6, y + 66);
-let rx = R;
-const tags = [];
-if (s.full_bell) tags.push(["FB", C.FB]);
-if (C[s.lamp]) tags.push([s.lamp, C[s.lamp]]);
-for (const [t, c] of tags) {
-ctx.font = f(800, 11);
-rx -= ctx.measureText(t).width + 11;
-pill(ctx, t, rx, y + 65, c, 11);
-rx -= 4;
-}
-} else {
-ctx.font = f(700, 15);
-ctx.fillStyle = C.muted;
-ctx.fillText("未游玩", L, y + 66);
-}
-ctx.font = f(600, 12);
-ctx.fillStyle = C.muted;
-const ps = s.platinum_score
-? `PS ${s.platinum_score.toLocaleString("en-US")}${s.platinum_max ? " / " + s.platinum_max.toLocaleString("en-US") : ""}`
-: "PS —";
-ctx.fillText(fit(ctx, ps, TW - 70), L, y + 88);
-ctx.textAlign = "right";
-ctx.font = f(700, 13);
-ctx.fillStyle = s.platinum_star ? C.star : C.line;
-ctx.fillText(stars(s.platinum_star), R, y + 88);
-ctx.textAlign = "left";
-const main = mode === "ps" ? s.ps_rating : s.rating;
+let cx = L + pill(ctx, diffText, L, y + 19, C[s.difficulty] || C.muted, 12) + 6;
+cx += text(`Lv${s.level}`, cx, y + 19, f(600, 12), C.muted) + 8;
+if (s.frame) textR(s.frame, y + 19, f(600, 12), C.muted, R - cx);
+text(s.title, L, y + 42, f(700, 16), C.fg, TW);
 const sub = mode === "ps"
-? `rating ${s.rating > 0 ? s.rating.toFixed(3) : "—"}`
-: `P-rate ${s.ps_rating > 0 ? fmtPs(s.ps_rating) : "—"}`;
-ctx.font = f(600, 12);
-ctx.fillStyle = C.muted;
-ctx.fillText(sub, L, y + 114);
-ctx.textAlign = "right";
-ctx.font = f(800, 22);
-ctx.fillStyle = main > 0 ? (mode === "ps" ? C.plat : C.accent) : C.muted;
-ctx.fillText(main > 0 ? (mode === "ps" ? fmtPs(main) : main.toFixed(3)) : "—", R, y + 115);
-ctx.textAlign = "left";
+? (s.rating > 0 ? `R ${s.rating.toFixed(3)}` : "")
+: (s.ps_rating > 0 ? `P ${fmtPs(s.ps_rating)}` : "");
+if (s.played) {
+cx = L + text(s.technical_score.toLocaleString("en-US"), L, y + 66, f(800, 18), C.fg);
+cx += 5 + text(s.rank, cx + 5, y + 66, f(800, 14), C[s.rank] || C.muted);
+} else {
+cx = L + text("未游玩", L, y + 66, f(700, 15), C.muted);
+}
+if (sub) textR(sub, y + 66, f(600, 12), mode === "ps" ? C.accent : C.plat, R - cx - 8);
+const starW = drawStars(ctx, s.platinum_star, R, y + 89);
+cx = L;
+if (s.played) {
+for (const [t, c] of [[C[s.lamp] ? s.lamp : "", C[s.lamp]], [s.full_bell ? "FB" : "", C.FB]]) {
+if (!t) continue;
+ctx.font = f(800, 11);
+if (cx + ctx.measureText(t).width + 11 > R - starW - 6) break;
+cx += pill(ctx, t, cx, y + 89, c, 11) + 4;
+}
+}
+const main = mode === "ps" ? s.ps_rating : s.rating;
+const mainW = textR(main > 0 ? (mode === "ps" ? fmtPs(main) : main.toFixed(3)) : "—", y + 115, f(800, 22),
+main > 0 ? (mode === "ps" ? C.plat : C.accent) : C.muted, TW);
+const ps = s.platinum_score
+? `PS ${s.platinum_score.toLocaleString("en-US")}${s.platinum_max ? "/" + s.platinum_max.toLocaleString("en-US") : ""}`
+: "PS —";
+text(ps, L, y + 114, f(600, 11), C.muted, TW - mainW - 8);
 }
 async function drawImage(title, subtitle, stats, sections) {
 const { W, PAD, COLS, GAP, CH, HEAD, SEC, FOOT, CW } = IMG;
@@ -486,12 +490,18 @@ y += rowsOf(sec.rows.length) * (CH + GAP);
 }
 ctx.font = f(500, 13);
 ctx.fillStyle = C.muted;
-ctx.fillText(
+ctx.fillText(fit(ctx,
 `${new Date().toLocaleString("ja-JP")}  ·  估算值（仅 EXP/MAS/LUN），与游戏内会有少许出入  ·  定数・曲绘：reiwa.f5.si（定数后带 "?" 为未确定）`,
-PAD, H - 16
-);
+W - PAD * 2), PAD, H - 16);
 try {
-return cv.toDataURL("image/png");
+const blob = await new Promise((resolve, reject) => {
+try {
+cv.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob failed"))), "image/png");
+} catch (e) {
+reject(e);
+}
+});
+return { blob, url: URL.createObjectURL(blob) };
 } catch (e) {
 if (jackets.size) {
 for (const k of jacketCache.keys()) jacketCache.set(k, Promise.resolve(null));
@@ -530,7 +540,22 @@ const csvCell = (s) => (/[",\n]/.test(String(s)) ? `"${String(s).replace(/"/g, '
 const toCsv = (rows, keys = Object.keys(rows[0])) =>
 "﻿" + [keys, ...rows.map((r) => keys.map((k) => r[k] ?? ""))]
 .map((r) => r.map(csvCell).join(",")).join("\r\n");
-const saveUrl = (name, url) => {
+const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const saveFile = async (name, blob) => {
+const file = new File([blob], name, { type: blob.type });
+if (navigator.canShare?.({ files: [file] })) {
+try {
+await navigator.share({ files: [file] });
+return;
+} catch (e) {
+if (e.name === "AbortError") return; // 用户取消
+}
+}
+const url = URL.createObjectURL(blob);
+if (isIOS) {
+window.open(url, "_blank") || (location.href = url);
+return;
+}
 const a = document.createElement("a");
 a.href = url;
 a.download = name;
@@ -538,7 +563,7 @@ document.body.appendChild(a);
 a.click();
 a.remove();
 };
-const download = (name, text, type) => saveUrl(name, URL.createObjectURL(new Blob([text], { type })));
+const download = (name, text, type) => saveFile(name, new Blob([text], { type }));
 const songKeys = ["frame", "const", "level", "difficulty", "title", "genre", "technical_score", "rank", "lamp", "full_bell", "rating", "platinum_star", "ps_rating", "platinum_max", "version", "const_unknown", "battle_score", "over_damage", "platinum_score"];
 const compactKeys = ["frame", "const", "difficulty", "title", "technical_score", "lamp", "rating"];
 let shownRows = [];
@@ -628,16 +653,16 @@ return `<td style="border:1px solid #ccc;padding:2px 6px">${esc(v)}</td>`;
 }).join("")}</tr>`).join("") +
 `</table></div>`;
 more.insertAdjacentHTML("beforeend", table(summary, Object.keys(summary[0])));
-const showImage = (url, name) => {
+const showImage = ({ url, blob }, name) => {
 view.innerHTML = "";
 const tip = document.createElement("div");
 tip.style.cssText = "display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:6px;color:#555";
-tip.textContent = "长按图片可以保存；双指可以放大。";
-mkBtn("保存图片", () => saveUrl(name, url), tip);
+mkBtn("保存图片", () => saveFile(name, blob), tip);
+tip.append(isIOS ? "点「保存图片」→「存储图像」，或长按图片保存" : "也可以长按 / 右键图片保存");
 const img = new Image();
 img.src = url;
 img.alt = name;
-img.style.cssText = "width:100%;height:auto;display:block;border-radius:8px";
+img.style.cssText = "width:100%;height:auto;display:block;border-radius:8px;-webkit-touch-callout:default;-webkit-user-select:auto;user-select:auto;pointer-events:auto";
 view.append(tip, img);
 };
 const imageCache = {};
