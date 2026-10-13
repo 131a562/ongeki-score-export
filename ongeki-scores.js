@@ -84,6 +84,9 @@ full_bell: has("music_icon_fb.png"),
 platinum_score: num(
 el.querySelector(".platinum_high_score_text_block")?.textContent.split("/")[0]
 ),
+platinum_max: num(
+el.querySelector(".platinum_high_score_text_block")?.textContent.split("/")[1]
+),
 platinum_star: num(
 el.querySelector(".platinum_high_score_star_block .f_b")?.textContent
 ),
@@ -199,6 +202,7 @@ const m = await findConst(s);
 s.const = m && m.const > 0 ? m.const : null;
 s.const_unknown = !m ? "无数据" : m.is_unknown ? "未确定" : "";
 s.version = m?.version || "";
+s.img = m?.img || "";
 s.is_new = !!m && !!latestVersion && m.version === latestVersion;
 s.is_bonus = !!m?.is_bonus;
 s.rating = s.played && s.const ? tsRating(s.const, s) : 0;
@@ -242,16 +246,33 @@ row.avg_ts = played.length
 : 0;
 return row;
 });
-const IMG = { W: 1080, PAD: 24, COLS: 3, GAP: 12, CH: 168, HEAD: 210, SEC: 64, MAX_CARDS: 150 };
-IMG.CW = (IMG.W - IMG.PAD * 2 - IMG.GAP * (IMG.COLS - 1)) / IMG.COLS;
+const JACKET_URL = "https://reiwa.f5.si/jackets/ongeki/";
+const IMG = { W: 1800, PAD: 28, COLS: 5, GAP: 10, CH: 124, HEAD: 168, SEC: 44, FOOT: 40, MAX_CARDS: 150 };
+IMG.CW = Math.floor((IMG.W - IMG.PAD * 2 - IMG.GAP * (IMG.COLS - 1)) / IMG.COLS);
 const FONT = `"Hiragino Sans","Hiragino Kaku Gothic ProN","PingFang SC","Noto Sans CJK JP","Microsoft YaHei",sans-serif`;
 const C = {
-bg: "#17161d", card: "#26242f", line: "#3a3745", fg: "#f3f1f8", muted: "#9d99ab", accent: "#ff5aa8",
-EXPERT: "#e5484d", MASTER: "#9a5cf0", LUNATIC: "#d9d6e3",
+bg: "#16151c", card: "#24222d", line: "#3a3745", fg: "#f3f1f8", muted: "#9d99ab", accent: "#ff5aa8", plat: "#7fe0ff",
+EXPERT: "#e5484d", MASTER: "#9a5cf0", LUNATIC: "#e8e5f0",
 "SSS+": "#ffd36b", SSS: "#ffc94a", SS: "#f0b43c", S: "#e3a53a",
-"AB+": "#ff7ab8", AB: "#ffb347", FC: "#4fc3f7", FB: "#ffe066",
+"AB+": "#ff7ab8", AB: "#ffb347", FC: "#4fc3f7", FB: "#ffe066", star: "#ffd36b",
 };
 const DIFF_SHORT = { EXPERT: "EXP", MASTER: "MAS", LUNATIC: "LUN" };
+const f = (w, px) => `${w} ${px}px ${FONT}`;
+const jacketCache = new Map();
+function loadJacket(id) {
+if (!id) return Promise.resolve(null);
+if (!jacketCache.has(id)) {
+jacketCache.set(id, new Promise((resolve) => {
+const img = new Image();
+img.crossOrigin = "anonymous";
+const t = setTimeout(() => resolve(null), 10000);
+img.onload = () => { clearTimeout(t); resolve(img); };
+img.onerror = () => { clearTimeout(t); resolve(null); };
+img.src = JACKET_URL + id + ".webp";
+}));
+}
+return jacketCache.get(id);
+}
 function rrect(ctx, x, y, w, h, r) {
 ctx.beginPath();
 ctx.moveTo(x + r, y);
@@ -267,117 +288,209 @@ let t = text;
 while (t.length > 1 && ctx.measureText(t + "…").width > maxW) t = t.slice(0, -1);
 return t + "…";
 }
-function pill(ctx, text, x, y, color, font = `700 20px ${FONT}`) {
-ctx.font = font;
-const w = ctx.measureText(text).width + 18;
-rrect(ctx, x, y - 22, w, 30, 8);
+function pill(ctx, text, x, y, color, px = 12, ink = "#16151c") {
+ctx.font = f(800, px);
+const w = ctx.measureText(text).width + px;
+rrect(ctx, x, y - px - 2, w, px + 7, 4);
 ctx.fillStyle = color;
 ctx.fill();
-ctx.fillStyle = "#17161d";
-ctx.fillText(text, x + 9, y);
+ctx.fillStyle = ink;
+ctx.fillText(text, x + px / 2, y + 1);
 return w;
 }
-function drawCard(ctx, s, label, x, y) {
+const stars = (n) => "★".repeat(Math.min(n, 5)) + "☆".repeat(Math.max(0, 5 - Math.min(n, 5)));
+function drawCard(ctx, s, label, x, y, jacket, mode) {
 const { CW, CH } = IMG;
-rrect(ctx, x, y, CW, CH, 14);
+rrect(ctx, x, y, CW, CH, 10);
 ctx.fillStyle = C.card;
 ctx.fill();
 ctx.save();
+rrect(ctx, x, y, CW, CH, 10);
 ctx.clip();
-ctx.fillStyle = C[s.difficulty] || C.muted;
-ctx.fillRect(x, y, 8, CH);
-ctx.restore();
-const L = x + 24, R = x + CW - 16;
-ctx.textBaseline = "alphabetic";
-ctx.textAlign = "left";
-ctx.font = `600 20px ${FONT}`;
+if (jacket) ctx.drawImage(jacket, x, y, CH, CH);
+else {
+ctx.fillStyle = C.line;
+ctx.fillRect(x, y, CH, CH);
 ctx.fillStyle = C.muted;
-ctx.fillText(label, L, y + 34);
-ctx.font = `700 20px ${FONT}`;
-const constText = `${DIFF_SHORT[s.difficulty] || ""} ${s.const != null ? s.const.toFixed(1) : s.level}${s.const_unknown ? "?" : ""}`;
-const cw = ctx.measureText(constText).width + 18;
-pill(ctx, constText, R - cw, y + 34, C[s.difficulty] || C.muted);
-ctx.font = `700 28px ${FONT}`;
+ctx.font = f(700, 14);
+ctx.textAlign = "center";
+ctx.fillText("NO IMAGE", x + CH / 2, y + CH / 2 + 5);
+ctx.textAlign = "left";
+}
+ctx.fillStyle = C[s.difficulty] || C.muted;
+ctx.fillRect(x, y + CH - 6, CH, 6);
+ctx.restore();
+ctx.font = f(800, 13);
+const lw = ctx.measureText(label).width + 12;
+rrect(ctx, x + 4, y + 4, lw, 20, 5);
+ctx.fillStyle = "rgba(0,0,0,.72)";
+ctx.fill();
+ctx.fillStyle = "#fff";
+ctx.fillText(label, x + 10, y + 19);
+const L = x + CH + 10, R = x + CW - 10, TW = R - L;
+ctx.textAlign = "left";
+const diffText = `${DIFF_SHORT[s.difficulty] || ""} ${s.const != null ? s.const.toFixed(1) : "?"}${s.const_unknown ? "?" : ""}`;
+let px = L + pill(ctx, diffText, L, y + 19, C[s.difficulty] || C.muted, 12) + 6;
+ctx.font = f(600, 12);
+ctx.fillStyle = C.muted;
+ctx.fillText(`Lv${s.level}`, px, y + 19);
+if (s.frame) {
+ctx.textAlign = "right";
+ctx.fillText(fit(ctx, s.frame, 90), R, y + 19);
+ctx.textAlign = "left";
+}
+ctx.font = f(700, 16);
 ctx.fillStyle = C.fg;
-ctx.fillText(fit(ctx, s.title, CW - 40), L, y + 76);
+ctx.fillText(fit(ctx, s.title, TW), L, y + 42);
 if (s.played) {
-ctx.font = `600 26px ${FONT}`;
+ctx.font = f(800, 18);
 ctx.fillStyle = C.fg;
 const ts = s.technical_score.toLocaleString("en-US");
-ctx.fillText(ts, L, y + 114);
+ctx.fillText(ts, L, y + 66);
 const tw = ctx.measureText(ts).width;
-ctx.font = `800 24px ${FONT}`;
+ctx.font = f(800, 14);
 ctx.fillStyle = C[s.rank] || C.muted;
-ctx.fillText(s.rank, L + tw + 12, y + 114);
-} else {
-ctx.font = `600 24px ${FONT}`;
-ctx.fillStyle = C.muted;
-ctx.fillText("未游玩", L, y + 114);
+ctx.fillText(s.rank, L + tw + 6, y + 66);
+let rx = R;
+const tags = [];
+if (s.full_bell) tags.push(["FB", C.FB]);
+if (C[s.lamp]) tags.push([s.lamp, C[s.lamp]]);
+for (const [t, c] of tags) {
+ctx.font = f(800, 11);
+rx -= ctx.measureText(t).width + 11;
+pill(ctx, t, rx, y + 65, c, 11);
+rx -= 4;
 }
-let px = L;
-if (s.played && C[s.lamp]) px += pill(ctx, s.lamp, px, y + 152, C[s.lamp]) + 8;
-if (s.full_bell) pill(ctx, "FB", px, y + 152, C.FB);
+} else {
+ctx.font = f(700, 15);
+ctx.fillStyle = C.muted;
+ctx.fillText("未游玩", L, y + 66);
+}
+ctx.font = f(600, 12);
+ctx.fillStyle = C.muted;
+const ps = s.platinum_score
+? `PS ${s.platinum_score.toLocaleString("en-US")}${s.platinum_max ? " / " + s.platinum_max.toLocaleString("en-US") : ""}`
+: "PS —";
+ctx.fillText(fit(ctx, ps, TW - 70), L, y + 88);
 ctx.textAlign = "right";
-ctx.font = `800 34px ${FONT}`;
-ctx.fillStyle = s.rating > 0 ? C.accent : C.muted;
-ctx.fillText(s.rating > 0 ? s.rating.toFixed(3) : "—", R, y + 154);
+ctx.font = f(700, 13);
+ctx.fillStyle = s.platinum_star ? C.star : C.line;
+ctx.fillText(stars(s.platinum_star), R, y + 88);
+ctx.textAlign = "left";
+const main = mode === "ps" ? s.ps_rating : s.rating;
+const sub = mode === "ps"
+? `rating ${s.rating > 0 ? s.rating.toFixed(3) : "—"}`
+: `P-rate ${s.ps_rating > 0 ? s.ps_rating.toFixed(3) : "—"}`;
+ctx.font = f(600, 12);
+ctx.fillStyle = C.muted;
+ctx.fillText(sub, L, y + 114);
+ctx.textAlign = "right";
+ctx.font = f(800, 22);
+ctx.fillStyle = main > 0 ? (mode === "ps" ? C.plat : C.accent) : C.muted;
+ctx.fillText(main > 0 ? main.toFixed(3) : "—", R, y + 115);
 ctx.textAlign = "left";
 }
-function drawImage(title, lines, sections) {
-const { W, PAD, COLS, GAP, CH, HEAD, SEC, CW } = IMG;
-const rowsOf = (n) => Math.ceil(n / COLS);
-const H = HEAD + sections.reduce((h, sec) => h + SEC + rowsOf(sec.rows.length) * (CH + GAP), 0) + PAD + 36;
+async function drawImage(title, subtitle, stats, sections) {
+const { W, PAD, COLS, GAP, CH, HEAD, SEC, FOOT, CW } = IMG;
+const rowsOf = (n) => Math.max(1, Math.ceil(n / COLS));
+const H = HEAD + sections.reduce((h, sec) => h + SEC + rowsOf(sec.rows.length) * (CH + GAP), 0) + FOOT;
+const jackets = new Map();
+await Promise.all(sections.flatMap((sec) => sec.rows).map(async (s) => jackets.set(s, await loadJacket(s.img))));
 const cv = document.createElement("canvas");
 cv.width = W;
 cv.height = H;
 const ctx = cv.getContext("2d");
 ctx.fillStyle = C.bg;
 ctx.fillRect(0, 0, W, H);
+ctx.textBaseline = "alphabetic";
 ctx.fillStyle = C.accent;
-ctx.font = `800 22px ${FONT}`;
-ctx.fillText("O.N.G.E.K.I. Re:Fresh", PAD, 48);
+ctx.font = f(800, 16);
+ctx.fillText("O.N.G.E.K.I. Re:Fresh", PAD, 42);
 ctx.fillStyle = C.fg;
-ctx.font = `800 56px ${FONT}`;
-ctx.fillText(title, PAD, 116);
-ctx.font = `500 24px ${FONT}`;
+ctx.font = f(800, 52);
+ctx.fillText(title, PAD, 100);
+ctx.font = f(500, 15);
 ctx.fillStyle = C.muted;
-lines.forEach((t, i) => ctx.fillText(fit(ctx, t, W - PAD * 2), PAD, 156 + i * 32));
+ctx.fillText(fit(ctx, subtitle, 700), PAD, 132);
+const boxW = 200, boxGap = 10;
+stats.forEach(([label, value, note], i) => {
+const bx = W - PAD - (stats.length - i) * (boxW + boxGap) + boxGap;
+rrect(ctx, bx, 26, boxW, 112, 10);
+ctx.fillStyle = C.card;
+ctx.fill();
+ctx.fillStyle = C.muted;
+ctx.font = f(700, 14);
+ctx.fillText(label, bx + 14, 52);
+ctx.fillStyle = C.fg;
+ctx.font = f(800, 30);
+ctx.fillText(fit(ctx, value, boxW - 28), bx + 14, 92);
+ctx.fillStyle = C.muted;
+ctx.font = f(500, 13);
+ctx.fillText(fit(ctx, note, boxW - 28), bx + 14, 122);
+});
 let y = HEAD;
 for (const sec of sections) {
 ctx.fillStyle = C.line;
-ctx.fillRect(PAD, y + 8, W - PAD * 2, 2);
+ctx.fillRect(PAD, y + 6, W - PAD * 2, 1);
 ctx.fillStyle = C.fg;
-ctx.font = `800 28px ${FONT}`;
-ctx.fillText(sec.name, PAD, y + 48);
+ctx.font = f(800, 20);
+ctx.fillText(sec.name, PAD, y + 34);
 if (sec.note) {
 const nw = ctx.measureText(sec.name).width;
-ctx.font = `500 22px ${FONT}`;
+ctx.font = f(500, 15);
 ctx.fillStyle = C.muted;
-ctx.fillText(sec.note, PAD + nw + 16, y + 48);
+ctx.fillText(sec.note, PAD + nw + 14, y + 34);
 }
 y += SEC;
+if (!sec.rows.length) {
+ctx.font = f(500, 15);
+ctx.fillStyle = C.muted;
+ctx.fillText("没有符合条件的谱面", PAD, y + 40);
+}
 sec.rows.forEach((s, i) => {
-drawCard(ctx, s, sec.label(s, i), PAD + (i % COLS) * (CW + GAP), y + Math.floor(i / COLS) * (CH + GAP));
+drawCard(ctx, s, sec.label(s, i), PAD + (i % COLS) * (CW + GAP), y + Math.floor(i / COLS) * (CH + GAP), jackets.get(s), sec.mode || "ts");
 });
 y += rowsOf(sec.rows.length) * (CH + GAP);
 }
-ctx.font = `500 20px ${FONT}`;
+ctx.font = f(500, 13);
 ctx.fillStyle = C.muted;
-ctx.fillText(`${new Date().toLocaleString("ja-JP")} · 定数来自第三方定数表，"?" 为未确定定数 · 仅 EXP/MAS/LUN 估算`, PAD, H - 24);
+ctx.fillText(
+`${new Date().toLocaleString("ja-JP")}  ·  估算值（仅 EXP/MAS/LUN），与游戏内会有少许出入  ·  定数・曲绘：reiwa.f5.si（定数后带 "?" 为未确定）`,
+PAD, H - 16
+);
+try {
 return cv.toDataURL("image/png");
+} catch (e) {
+if (jackets.size) {
+for (const k of jacketCache.keys()) jacketCache.set(k, Promise.resolve(null));
+return drawImage(title, subtitle, stats, sections);
+}
+throw e;
+}
 }
 const stamp = new Date().toISOString().slice(0, 10);
+const avg = (arr, k) => (arr.length ? sum(arr, k) / arr.length : 0);
+const ratingStats = () => [
+["新曲枠", avg(new10, "rating").toFixed(3), `${new10.length}曲 合计 ${ratingInfo.new10.toFixed(2)}`],
+["ベスト枠", avg(best50, "rating").toFixed(3), `${best50.length}曲 合计 ${ratingInfo.best50.toFixed(2)}`],
+["P-SCORE枠", ratingInfo.ps50.toFixed(3), `${ps50.length}曲 · ÷50 = ${(ratingInfo.ps50 / 50).toFixed(3)}`],
+];
 const b50Image = () =>
 drawImage(
 `Rating ${ratingInfo.total.toFixed(3)}`,
+`新曲枠 10 + ベスト枠 50 + P-SCORE枠 50，合计 ÷ 50`,
+ratingStats(),
 [
-`新曲枠 ${new10.length}曲 合计 ${ratingInfo.new10.toFixed(3)}  ·  ベスト枠 ${best50.length}曲 合计 ${ratingInfo.best50.toFixed(3)}（平均 ${(best50.length ? ratingInfo.best50 / best50.length : 0).toFixed(3)}）`,
-`P-SCORE枠 ${ps50.length}曲 合计 ${ratingInfo.ps50.toFixed(3)}  ·  估算值，与游戏内会有少许出入`,
-],
-[
-{ name: "新曲枠", note: `${latestVersion} · 合计 ${ratingInfo.new10.toFixed(3)}`, rows: new10, label: (s, i) => `#${i + 1}` },
-{ name: "ベスト枠", note: `合计 ${ratingInfo.best50.toFixed(3)}`, rows: best50, label: (s, i) => `#${i + 1}` },
+{ name: "新曲枠", note: `${latestVersion} · 平均 ${avg(new10, "rating").toFixed(3)}`, rows: new10, label: (s, i) => `#${i + 1}` },
+{ name: "ベスト枠", note: `平均 ${avg(best50, "rating").toFixed(3)} · 最低 ${best50.length ? best50[best50.length - 1].rating.toFixed(3) : "—"}`, rows: best50, label: (s, i) => `#${i + 1}` },
 ]
+);
+const p50Image = () =>
+drawImage(
+`P-SCORE ${ratingInfo.ps50.toFixed(3)}`,
+`プラチナスコア枠：☆数 × 定数² ÷ 1000，取前 50`,
+ratingStats(),
+[{ name: "P-SCORE枠", note: `合计 ${ratingInfo.ps50.toFixed(3)} · 最低 ${ps50.length ? ps50[ps50.length - 1].ps_rating.toFixed(3) : "—"}`, rows: ps50, label: (s, i) => `P${i + 1}`, mode: "ps" }]
 );
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const csvCell = (s) => (/[",\n]/.test(String(s)) ? `"${String(s).replace(/"/g, '""')}"` : String(s));
@@ -393,7 +506,7 @@ a.click();
 a.remove();
 };
 const download = (name, text, type) => saveUrl(name, URL.createObjectURL(new Blob([text], { type })));
-const songKeys = ["frame", "const", "level", "difficulty", "title", "genre", "technical_score", "rank", "lamp", "full_bell", "rating", "platinum_star", "ps_rating", "version", "const_unknown", "battle_score", "over_damage", "platinum_score"];
+const songKeys = ["frame", "const", "level", "difficulty", "title", "genre", "technical_score", "rank", "lamp", "full_bell", "rating", "platinum_star", "ps_rating", "platinum_max", "version", "const_unknown", "battle_score", "over_damage", "platinum_score"];
 const compactKeys = ["frame", "const", "difficulty", "title", "technical_score", "lamp", "rating"];
 let shownRows = [];
 let tab = "b50";
@@ -410,7 +523,7 @@ parent.appendChild(b);
 return b;
 };
 const tabs = {};
-for (const [k, label] of [["b50", "B50 图"], ["filter", "筛选图"], ["table", "表格"]]) {
+for (const [k, label] of [["b50", "B50 图"], ["p50", "P50 图"], ["filter", "筛选图"], ["table", "表格"]]) {
 tabs[k] = mkBtn(label, () => { tab = k; render(); });
 }
 mkBtn("关闭", () => panel.remove());
@@ -464,11 +577,12 @@ mkBtn("保存图片", () => saveUrl(name, url), tip);
 const img = new Image();
 img.src = url;
 img.alt = name;
-img.style.cssText = "width:100%;height:auto;display:block;border-radius:10px";
+img.style.cssText = "width:100%;height:auto;display:block;border-radius:8px";
 view.append(tip, img);
 };
-let b50Url = null;
+const imageCache = {};
 let timer = null;
+let renderSeq = 0;
 function filterRows() {
 const min = parseFloat($("oc-min").value);
 const max = parseFloat($("oc-max").value);
@@ -499,44 +613,57 @@ if (frame) desc.push($("oc-frame").selectedOptions[0].text);
 if (onlyPlayed) desc.push("只看已游玩");
 return desc;
 }
-function render() {
+async function render() {
+const seq = ++renderSeq;
 for (const [k, b] of Object.entries(tabs)) {
 b.style.background = k === tab ? "#d1127a" : "#fff";
 b.style.color = k === tab ? "#fff" : "#222";
 }
-filters.style.display = tab === "b50" ? "none" : "flex";
+filters.style.display = tab === "b50" || tab === "p50" ? "none" : "flex";
 const desc = filterRows();
-if (tab === "b50") {
-b50Url = b50Url || b50Image();
-showImage(b50Url, `ongeki_b50_${stamp}.png`);
-} else if (tab === "filter") {
-const played = shownRows.filter((s) => s.played);
-const rows = shownRows.slice(0, IMG.MAX_CARDS);
-const rankCount = ["SSS+", "SSS", "SS", "S"].map((r) => `${r} ${played.filter((s) => s.rank === r).length}`).join(" · ");
-const url = drawImage(
-"筛选结果",
-[
-`${desc.join(" · ") || "全部谱面"}  ·  ${shownRows.length} 谱面，已游玩 ${played.length}`,
-`平均单曲rating ${(played.length ? sum(played, "rating") / played.length : 0).toFixed(3)}  ·  ${rankCount}`,
-],
-[{
-name: "谱面",
-note: shownRows.length > rows.length ? `只显示前 ${rows.length} 个，请缩小筛选范围` : "",
-rows,
-label: (s, i) => `${i + 1}${s.frame ? " · " + s.frame : ""}`,
-}]
-);
-showImage(url, `ongeki_filtered_${stamp}.png`);
-} else {
+if (tab === "table") {
 const played = shownRows.filter((s) => s.played);
 view.innerHTML =
-`<div style="margin:4px 0 6px"><b>${shownRows.length} 条</b>（已游玩 ${played.length}，平均单曲rating ${(played.length ? sum(played, "rating") / played.length : 0).toFixed(3)}）· 黄色 = 计入 rating</div>` +
+`<div style="margin:4px 0 6px"><b>${shownRows.length} 条</b>（已游玩 ${played.length}，平均单曲rating ${avg(played, "rating").toFixed(3)}）· 黄色 = 计入 rating</div>` +
 table(shownRows, innerWidth >= 768 ? songKeys : compactKeys);
+return;
 }
+view.innerHTML = '<div style="padding:24px 0;color:#555">正在生成图片（加载曲绘中）…</div>';
+let url, name;
+if (tab === "b50") {
+url = imageCache.b50 = imageCache.b50 || (await b50Image());
+name = `ongeki_b50_${stamp}.png`;
+} else if (tab === "p50") {
+url = imageCache.p50 = imageCache.p50 || (await p50Image());
+name = `ongeki_p50_${stamp}.png`;
+} else {
+const played = shownRows.filter((s) => s.played);
+const rows = shownRows.slice(0, IMG.MAX_CARDS);
+const count = (r) => played.filter((s) => s.rank === r).length;
+url = await drawImage(
+`${shownRows.length} 谱面`,
+`${desc.join(" · ") || "全部谱面"} · 排序：${$("oc-sort").selectedOptions[0].text}`,
+[
+["已游玩", `${played.length}`, `${shownRows.length ? ((played.length / shownRows.length) * 100).toFixed(1) : 0}%`],
+["平均 rating", avg(played, "rating").toFixed(3), `平均 TS ${Math.round(avg(played, "technical_score")).toLocaleString("en-US")}`],
+["SSS+ / SSS", `${count("SSS+")} / ${count("SSS")}`, `SS ${count("SS")} · S ${count("S")}`],
+["AB+ / AB / FC", `${played.filter((s) => s.lamp === "AB+").length} / ${played.filter((s) => s.lamp === "AB").length} / ${played.filter((s) => s.lamp === "FC").length}`, `FB ${played.filter((s) => s.full_bell).length}`],
+],
+[{
+name: "筛选结果",
+note: shownRows.length > rows.length ? `只显示前 ${rows.length} 个，请缩小筛选范围` : "",
+rows,
+label: (s, i) => `${i + 1}`,
+mode: $("oc-sort").value === "ps" ? "ps" : "ts",
+}]
+);
+name = `ongeki_filtered_${stamp}.png`;
+}
+if (seq === renderSeq) showImage(url, name); // 期间又切换了标签/筛选条件时，丢弃旧结果
 }
 const rerender = () => {
 clearTimeout(timer);
-timer = setTimeout(render, 300);
+timer = setTimeout(render, 400);
 };
 filters.addEventListener("input", rerender);
 filters.addEventListener("change", rerender);
