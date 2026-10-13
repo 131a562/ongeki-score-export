@@ -81,7 +81,7 @@ technical_score: ts,
 rank: played ? rankOf(ts) : "",
 battle_score: num(v[1]?.textContent),
 over_damage: num(v[0]?.textContent),
-lamp: !played ? "未游玩" : abPlus ? "AB+" : ab ? "AB" : fc ? "FC" : "CLEAR",
+lamp: !played ? "未游玩" : ts >= 1010000 && ab ? "AB+" : ab ? "AB" : fc ? "FC" : "CLEAR",
 full_bell: has("music_icon_fb.png"),
 platinum_score: num(
 el.querySelector(".platinum_high_score_text_block")?.textContent.split("/")[0]
@@ -221,6 +221,21 @@ close.onclick = () => panel.remove();
 panel.appendChild(close);
 return;
 }
+log("正在读取游戏内 Rating ...");
+let official = null;
+for (const path of ["/home/playerDataDetail/", "/home/"]) {
+try {
+const { doc } = await getDoc(NET + path);
+const block = doc.querySelector(".rating_new_block .rating_field") || doc.querySelector(".rating_field");
+const value = parseFloat(block?.querySelector("[class^='rating_']")?.textContent || block?.textContent || "");
+if (value > 0) {
+const max = parseFloat((block.querySelector(".f_11")?.textContent || "").replace(/[^\d.]/g, ""));
+official = { rating: value, max: max > 0 ? max : null };
+break;
+}
+} catch (e) {}
+}
+log(official ? `✓ 游戏内 Rating：${official.rating.toFixed(3)}` : "× 没有读到游戏内 Rating，只显示估算值");
 for (const s of charts) {
 const m = await findConst(s);
 s.const = m && m.const > 0 ? m.const : null;
@@ -255,9 +270,14 @@ const ratingInfo = {
 new10: units.new10 / 1e5,
 best50: units.best50 / 1e5,
 ps50: units.ps50 / 1e5,
-total: Math.floor((units.new10 + units.best50 + units.ps50) / 5000) / 1000,
+part: {
+new10: Math.floor(units.new10 / 5000) / 1000,
+best50: Math.floor(units.best50 / 5000) / 1000,
+ps50: Math.floor(units.ps50 / 5000) / 1000,
+},
 exact: (units.new10 + units.best50 + units.ps50) / 50 / 1e5,
 };
+ratingInfo.total = (Math.floor(units.new10 / 5000) + Math.floor(units.best50 / 5000) + Math.floor(units.ps50 / 5000)) / 1000;
 const levelKey = (lv) => parseFloat(lv) + (lv.endsWith("+") ? 0.5 : 0);
 const levels = [...new Set(all.map((s) => s.level).filter(Boolean))]
 .sort((a, b) => levelKey(b) - levelKey(a));
@@ -514,14 +534,16 @@ const stamp = new Date().toISOString().slice(0, 10);
 const fmtPs = (v) => v.toFixed(5).replace(/(\.\d{3}\d*?)0+$/, "$1");
 const avg = (arr, k) => (arr.length ? sum(arr, k) / arr.length : 0);
 const ratingStats = () => [
-["新曲枠", avg(new10, "rating").toFixed(3), `${new10.length}曲 合计 ${ratingInfo.new10.toFixed(2)}`],
-["ベスト枠", avg(best50, "rating").toFixed(3), `${best50.length}曲 合计 ${ratingInfo.best50.toFixed(2)}`],
-["P-SCORE枠", fmtPs(ratingInfo.ps50), `${ps50.length}曲 · ÷50 = ${(ratingInfo.ps50 / 50).toFixed(6)}`],
+["新曲枠", `+${ratingInfo.part.new10.toFixed(3)}`, `${new10.length}曲 平均 ${avg(new10, "rating").toFixed(3)} · 合计 ${ratingInfo.new10.toFixed(3)}`],
+["ベスト枠", `+${ratingInfo.part.best50.toFixed(3)}`, `${best50.length}曲 平均 ${avg(best50, "rating").toFixed(3)} · 合计 ${ratingInfo.best50.toFixed(3)}`],
+["P-SCORE枠", `+${ratingInfo.part.ps50.toFixed(3)}`, `${ps50.length}曲 · 合计 ${fmtPs(ratingInfo.ps50)}`],
 ];
 const b50Image = () =>
 drawImage(
-`Rating ${ratingInfo.total.toFixed(3)}`,
-`新曲枠 10 + ベスト枠 50 + P-SCORE枠 50，合计 ÷ 50 = ${ratingInfo.exact.toFixed(6)}（截断到小数点后 3 位）`,
+official ? `Rating ${official.rating.toFixed(3)}` : `Rating ${ratingInfo.total.toFixed(3)}`,
+official
+? `游戏内 Rating（オンゲキ-NET）${official.max ? ` · MAX ${official.max.toFixed(3)}` : ""} · 本工具计算 ${ratingInfo.total.toFixed(3)}${ratingInfo.total === official.rating ? "（一致）" : `（差 ${(ratingInfo.total - official.rating > 0 ? "+" : "") + (ratingInfo.total - official.rating).toFixed(3)}）`}`
+: `新曲枠 ${ratingInfo.part.new10.toFixed(3)} + ベスト枠 ${ratingInfo.part.best50.toFixed(3)} + P-SCORE枠 ${ratingInfo.part.ps50.toFixed(3)}（各枠合计 ÷ 50 后截断）`,
 ratingStats(),
 [
 { name: "新曲枠", note: `${latestVersion} · 平均 ${avg(new10, "rating").toFixed(3)}`, rows: new10, label: (s, i) => `#${i + 1}` },
@@ -611,12 +633,13 @@ more.appendChild(moreBtns);
 mkBtn("全部成绩 CSV", () => download(`ongeki_scores_${stamp}.csv`, toCsv(all, songKeys), "text/csv"), moreBtns);
 mkBtn("当前筛选 CSV", () => shownRows.length && download(`ongeki_filtered_${stamp}.csv`, toCsv(shownRows, songKeys), "text/csv"), moreBtns);
 mkBtn("汇总 CSV", () => download(`ongeki_summary_${stamp}.csv`, toCsv(summary), "text/csv"), moreBtns);
-mkBtn("JSON", () => download(`ongeki_scores_${stamp}.json`, JSON.stringify({ exported_at: new Date().toISOString(), rating: ratingInfo, summary, songs: all }, null, 1), "application/json"), moreBtns);
+mkBtn("JSON", () => download(`ongeki_scores_${stamp}.json`, JSON.stringify({ exported_at: new Date().toISOString(), rating: ratingInfo, official, summary, songs: all }, null, 1), "application/json"), moreBtns);
 mkBtn("调试信息", async () => {
 const info = JSON.stringify({
 ua: navigator.userAgent,
 charts: DIFFS.map((d) => `${d.name}:${charts.filter((s) => s.difficulty === d.name).length}`).join(" "),
 rating: ratingInfo,
+official,
 unknownConst: charts.filter((s) => s.played && s.const_unknown).map((s) => `${s.difficulty} ${s.title} (${s.const_unknown})`),
 matchLog,
 sampleHtml: sampleHtml.replace(/\s+/g, " ").slice(0, 3000),
