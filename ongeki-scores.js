@@ -89,14 +89,20 @@ el.querySelector(".platinum_high_score_text_block")?.textContent.split("/")[0]
 platinum_max: num(
 el.querySelector(".platinum_high_score_text_block")?.textContent.split("/")[1]
 ),
-platinum_star: num(
-el.querySelector(".platinum_high_score_star_block .f_b")?.textContent
-),
+platinum_star_text: el.querySelector(".platinum_high_score_star_block")?.textContent.trim() || "",
 });
+if (!sampleHtml && el.querySelector("[class*=platinum]")) sampleHtml = el.outerHTML;
 }
+}
+for (const s of songs) {
+s.platinum_star = s.platinum_max > 0
+? [94, 95, 96, 97, 98].filter((t) => s.platinum_score * 100 >= s.platinum_max * t).length
+: Math.min(5, +(s.platinum_star_text.match(/\d+/) || [0])[0]);
+delete s.platinum_star_text;
 }
 return songs;
 }
+let sampleHtml = ""; // 调试用：一首歌在成绩页上的原始 HTML
 log("正在读取谱面定数表 ...");
 let constData = [];
 try {
@@ -127,19 +133,35 @@ const plus = s.level.endsWith("+");
 const byLevel = c.filter((m) => Math.floor(m.level) === lv && (m.level % 1 >= 0.5) === plus);
 if (byLevel.length) c = byLevel;
 }
+const entry = c.length > 1
+? { title: s.title, diff: s.diffKey, level: s.level, genre: s.genre, idx: s.idx, candidates: c.map((m) => `${m.genre} / Lv${m.level} / ${m.const} / ${m.artist}`) }
+: null;
 if (c.length > 1 && s.idx) {
 try {
 const html = await (await fetch(`${NET}/record/musicDetail/?idx=${encodeURIComponent(s.idx)}`, { credentials: "include" })).text();
 const doc = new DOMParser().parseFromString(html, "text/html");
-const artist = norm((doc.querySelector("div.m_5.f_13.break")?.textContent || "").trim().split("\n")[0]);
-const byArtist = c.filter((m) => artist && norm(m.artist) === artist);
+const artistEl = doc.querySelector("div.m_5.f_13.break");
+const artist = norm((artistEl?.textContent || "").trim().split("\n")[0]);
+let byArtist = c.filter((m) => artist && norm(m.artist) === artist);
+if (!byArtist.length) byArtist = c.filter((m) => artist && (norm(m.artist).includes(artist) || artist.includes(norm(m.artist))));
 if (byArtist.length) c = byArtist;
+entry.artist = artist;
+if (!artistEl) entry.detailHtml = (doc.querySelector(".container3") || doc.body)?.innerHTML.replace(/\s+/g, " ").slice(0, 1500);
 await sleep(500);
-} catch (e) {}
+} catch (e) {
+entry.error = String(e);
+}
 }
 if (c.length > 1) c = c.filter((m) => m.const > 0).concat(c.filter((m) => !(m.const > 0)));
-return c[0];
+const ambiguous = new Set(c.filter((m) => m.const > 0).map((m) => m.const)).size > 1;
+if (entry) {
+entry.chosen = c[0] ? `${c[0].genre} / ${c[0].const} / ${c[0].artist}` : null;
+entry.ambiguous = ambiguous;
+matchLog.push(entry);
 }
+return c[0] && { ...c[0], ambiguous };
+}
+const matchLog = []; // 调试用：同名曲的匹配过程
 const getDoc = async (url) => {
 const res = await fetch(url, { credentials: "include" });
 const doc = new DOMParser().parseFromString(await res.text(), "text/html");
@@ -156,7 +178,7 @@ const songs = parseDifficulty(page.doc, diff);
 if (!songs.length) diagnostics.push(`[genre=${genre} ${diff.name}] ${diagnose(page)}`);
 return songs;
 };
-const all = [];
+const charts = [];
 let genres = null; // 「全部类型」读不到时，改成逐个类型读取
 for (const diff of DIFFS) {
 log(`正在获取 ${diff.name} ...`);
@@ -181,10 +203,10 @@ songs.push(...(await fetchSongs(g, diff)));
 }
 }
 log(`${songs.length ? "✓" : "×"} ${diff.name}：${songs.length} 个谱面`);
-all.push(...songs);
+charts.push(...songs);
 await sleep(1000); // 别给服务器太大压力
 }
-if (!all.length) {
+if (!charts.length) {
 log("没有取到任何数据。可能是：未登录、处于维护时间（4:00–7:00）、当前账号无法查看成绩页，或页面结构不同。");
 log("请把下面的诊断信息截图或复制发给开发者：");
 const pre = document.createElement("textarea");
@@ -199,10 +221,10 @@ close.onclick = () => panel.remove();
 panel.appendChild(close);
 return;
 }
-for (const s of all) {
+for (const s of charts) {
 const m = await findConst(s);
 s.const = m && m.const > 0 ? m.const : null;
-s.const_unknown = !m ? "无数据" : m.is_unknown ? "未确定" : "";
+s.const_unknown = !m ? "无数据" : m.ambiguous ? "同名未区分" : m.is_unknown ? "未确定" : "";
 s.version = m?.version || "";
 s.img = m?.img || "";
 s.is_new = !!m && !!latestVersion && m.version === latestVersion;
@@ -213,7 +235,9 @@ s.frame = "";
 delete s.diffKey;
 delete s.idx;
 }
-const eligible = all.filter((s) => s.const && !s.is_bonus);
+const hiddenDiffs = new Set(DIFFS.filter((d) => d.hidden).map((d) => d.name));
+const all = charts.filter((s) => !hiddenDiffs.has(s.difficulty)); // 筛选图 / 表格 / 汇总只显示 EXP/MAS/LUN
+const eligible = charts.filter((s) => s.const && !s.is_bonus);
 const byRating = (a, b) => b.rating - a.rating;
 const new10 = eligible.filter((s) => s.is_new && s.rating > 0).sort(byRating).slice(0, 10);
 const best50 = eligible.filter((s) => !s.is_new && s.rating > 0).sort(byRating).slice(0, 50);
@@ -260,11 +284,11 @@ IMG.CW = Math.floor((IMG.W - IMG.PAD * 2 - IMG.GAP * (IMG.COLS - 1)) / IMG.COLS)
 const FONT = `"Hiragino Sans","Hiragino Kaku Gothic ProN","PingFang SC","Noto Sans CJK JP","Microsoft YaHei",sans-serif`;
 const C = {
 bg: "#16151c", card: "#24222d", line: "#3a3745", fg: "#f3f1f8", muted: "#9d99ab", accent: "#ff5aa8", plat: "#7fe0ff",
-EXPERT: "#e5484d", MASTER: "#9a5cf0", LUNATIC: "#e8e5f0",
+BASIC: "#3fbf6f", ADVANCED: "#f2a33a", EXPERT: "#e5484d", MASTER: "#9a5cf0", LUNATIC: "#e8e5f0",
 "SSS+": "#ffd36b", SSS: "#ffc94a", SS: "#f0b43c", S: "#e3a53a",
 "AB+": "#ff7ab8", AB: "#ffb347", FC: "#4fc3f7", FB: "#ffe066", star: "#ffd36b",
 };
-const DIFF_SHORT = { EXPERT: "EXP", MASTER: "MAS", LUNATIC: "LUN" };
+const DIFF_SHORT = { BASIC: "BAS", ADVANCED: "ADV", EXPERT: "EXP", MASTER: "MAS", LUNATIC: "LUN" };
 const f = (w, px) => `${w} ${px}px ${FONT}`;
 const jacketCache = new Map();
 function loadJacket(id) {
@@ -543,7 +567,7 @@ const group = (label, html) => `<label style="display:inline-flex;align-items:ce
 filters.innerHTML = [
 group("定数", `<input id="oc-min" type="number" step="0.1" inputmode="decimal" placeholder="下限" style="width:64px;padding:4px;font-size:16px"> 〜 <input id="oc-max" type="number" step="0.1" inputmode="decimal" placeholder="上限" style="width:64px;padding:4px;font-size:16px">`),
 group("等级", sel("oc-lv", `<option value="">全部</option>${levels.map((lv) => `<option>${esc(lv)}</option>`).join("")}`)),
-group("难度", sel("oc-diff", `<option value="">全部</option>${DIFFS.map((d) => `<option>${d.name}</option>`).join("")}`)),
+group("难度", sel("oc-diff", `<option value="">全部</option>${DIFFS.filter((d) => !d.hidden).map((d) => `<option>${d.name}</option>`).join("")}`)),
 group("范围", sel("oc-frame", `<option value="">全部</option><option value="B">ベスト枠(B50)</option><option value="新曲">新曲枠</option><option value="P">P-SCORE枠</option>`)),
 group("排序", sel("oc-sort", `<option value="rating">单曲rating</option><option value="const">定数</option><option value="ts">TS</option><option value="ps">P-rating</option>`)),
 group("", `<input id="oc-played" type="checkbox"> 只看已游玩`),
@@ -563,6 +587,32 @@ mkBtn("全部成绩 CSV", () => download(`ongeki_scores_${stamp}.csv`, toCsv(all
 mkBtn("当前筛选 CSV", () => shownRows.length && download(`ongeki_filtered_${stamp}.csv`, toCsv(shownRows, songKeys), "text/csv"), moreBtns);
 mkBtn("汇总 CSV", () => download(`ongeki_summary_${stamp}.csv`, toCsv(summary), "text/csv"), moreBtns);
 mkBtn("JSON", () => download(`ongeki_scores_${stamp}.json`, JSON.stringify({ exported_at: new Date().toISOString(), rating: ratingInfo, summary, songs: all }, null, 1), "application/json"), moreBtns);
+mkBtn("调试信息", async () => {
+const info = JSON.stringify({
+ua: navigator.userAgent,
+charts: DIFFS.map((d) => `${d.name}:${charts.filter((s) => s.difficulty === d.name).length}`).join(" "),
+rating: ratingInfo,
+unknownConst: charts.filter((s) => s.played && s.const_unknown).map((s) => `${s.difficulty} ${s.title} (${s.const_unknown})`),
+matchLog,
+sampleHtml: sampleHtml.replace(/\s+/g, " ").slice(0, 3000),
+}, null, 1);
+let box = more.querySelector("textarea");
+if (!box) {
+box = document.createElement("textarea");
+box.readOnly = true;
+box.style.cssText = "width:100%;height:200px;font:11px monospace;box-sizing:border-box;margin:6px 0";
+moreBtns.after(box);
+}
+box.value = info;
+try {
+await navigator.clipboard.writeText(info);
+box.placeholder = "";
+alert("调试信息已复制，粘贴发给开发者即可。");
+} catch (e) {
+box.focus();
+box.select();
+}
+}, moreBtns);
 panel.appendChild(more);
 const table = (rows, keys) =>
 `<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;background:#fff"><table style="border-collapse:collapse;white-space:nowrap">` +
