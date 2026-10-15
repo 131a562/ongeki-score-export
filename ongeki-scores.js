@@ -257,7 +257,7 @@ const byRating = (a, b) => b.rating - a.rating;
 const new10 = eligible.filter((s) => s.is_new && s.rating > 0).sort(byRating).slice(0, 10);
 const best50 = eligible.filter((s) => !s.is_new && s.rating > 0).sort(byRating).slice(0, 50);
 const ps50 = eligible.filter((s) => s.ps_rating > 0).sort((a, b) => b.ps_rating - a.ps_rating).slice(0, 50);
-new10.forEach((s, i) => (s.frame = `新曲${i + 1}`));
+new10.forEach((s, i) => (s.frame = `N${i + 1}`));
 best50.forEach((s, i) => (s.frame = `B${i + 1}`));
 ps50.forEach((s, i) => (s.frame += (s.frame ? " / " : "") + `P${i + 1}`));
 const sum = (arr, k) => arr.reduce((a, s) => a + s[k], 0);
@@ -350,6 +350,40 @@ ctx.fillStyle = ink;
 ctx.fillText(text, x + px / 2, y + 1);
 return w;
 }
+function constPill(ctx, s, x, y, color, px = 12) {
+const ink = "#16151c";
+const head = `${DIFF_SHORT[s.difficulty] || ""} `;
+let intPart = "?", tail = "";
+if (s.const != null) {
+const [i, d] = s.const.toFixed(1).split(".");
+intPart = i;
+tail = "." + d;
+}
+if (s.const_unknown) tail += "?";
+const plus = s.level.endsWith("+");
+const big = f(800, px), small = f(800, Math.round(px * 0.75));
+ctx.font = big;
+const wHead = ctx.measureText(head + intPart).width, wTail = ctx.measureText(tail).width;
+ctx.font = small;
+const wPlus = plus ? ctx.measureText("+").width + 1 : 0;
+const w = wHead + wPlus + wTail + px;
+rrect(ctx, x, y - px - 2, w, px + 7, 4);
+ctx.fillStyle = color;
+ctx.fill();
+ctx.fillStyle = ink;
+let tx = x + px / 2;
+ctx.font = big;
+ctx.fillText(head + intPart, tx, y + 1);
+tx += wHead;
+if (plus) {
+ctx.font = small;
+ctx.fillText("+", tx, y + 1 - px * 0.42); // 右上角
+tx += wPlus;
+}
+ctx.font = big;
+ctx.fillText(tail, tx, y + 1);
+return w;
+}
 function drawStars(ctx, n, right, baseline, size = 11, gap = 2) {
 const total = 5 * size + 4 * gap;
 for (let i = 0; i < 5; i++) {
@@ -413,10 +447,9 @@ ctx.fillText(s2, R - w, ty);
 }
 return w;
 };
-const diffText = `${DIFF_SHORT[s.difficulty] || ""} ${s.const != null ? s.const.toFixed(1) : "?"}${s.const_unknown ? "?" : ""}`;
-let cx = L + pill(ctx, diffText, L, y + 19, C[s.difficulty] || C.muted, 12) + 6;
-cx += text(`Lv${s.level}`, cx, y + 19, f(600, 12), C.muted) + 8;
-if (s.frame) textR(s.frame, y + 19, f(600, 12), C.muted, R - cx);
+let cx = L + constPill(ctx, s, L, y + 19, C[s.difficulty] || C.muted) + 8;
+const pRank = mode === "ps" ? "" : (s.frame.match(/P\d+/) || [""])[0];
+if (pRank) textR(pRank, y + 19, f(700, 12), C.plat, R - cx);
 text(s.title, L, y + 42, f(700, 16), C.fg, TW);
 const sub = mode === "ps"
 ? (s.rating > 0 ? `R ${s.rating.toFixed(3)}` : "")
@@ -534,9 +567,9 @@ const stamp = new Date().toISOString().slice(0, 10);
 const fmtPs = (v) => v.toFixed(5).replace(/(\.\d{3}\d*?)0+$/, "$1");
 const avg = (arr, k) => (arr.length ? sum(arr, k) / arr.length : 0);
 const ratingStats = () => [
-["新曲枠", `+${ratingInfo.part.new10.toFixed(3)}`, `${new10.length}曲 平均 ${avg(new10, "rating").toFixed(3)} · 合计 ${ratingInfo.new10.toFixed(3)}`],
-["ベスト枠", `+${ratingInfo.part.best50.toFixed(3)}`, `${best50.length}曲 平均 ${avg(best50, "rating").toFixed(3)} · 合计 ${ratingInfo.best50.toFixed(3)}`],
-["P-SCORE枠", `+${ratingInfo.part.ps50.toFixed(3)}`, `${ps50.length}曲 · 合计 ${fmtPs(ratingInfo.ps50)}`],
+["NEW10", `+${ratingInfo.part.new10.toFixed(3)}`, `${new10.length}曲 平均 ${avg(new10, "rating").toFixed(3)} · 合计 ${ratingInfo.new10.toFixed(3)}`],
+["BEST50", `+${ratingInfo.part.best50.toFixed(3)}`, `${best50.length}曲 平均 ${avg(best50, "rating").toFixed(3)} · 合计 ${ratingInfo.best50.toFixed(3)}`],
+["P-SCORE50", `+${ratingInfo.part.ps50.toFixed(3)}`, `${ps50.length}曲 · 合计 ${fmtPs(ratingInfo.ps50)}`],
 ];
 const b50Image = () =>
 drawImage(
@@ -546,8 +579,8 @@ official
 : `新曲枠 ${ratingInfo.part.new10.toFixed(3)} + ベスト枠 ${ratingInfo.part.best50.toFixed(3)} + P-SCORE枠 ${ratingInfo.part.ps50.toFixed(3)}（各枠合计 ÷ 50 后截断）`,
 ratingStats(),
 [
-{ name: "新曲枠", note: `${latestVersion} · 平均 ${avg(new10, "rating").toFixed(3)}`, rows: new10, label: (s, i) => `#${i + 1}` },
-{ name: "ベスト枠", note: `平均 ${avg(best50, "rating").toFixed(3)} · 最低 ${best50.length ? best50[best50.length - 1].rating.toFixed(3) : "—"}`, rows: best50, label: (s, i) => `#${i + 1}` },
+{ name: "BEST50", note: `平均 ${avg(best50, "rating").toFixed(3)} · 最低 ${best50.length ? best50[best50.length - 1].rating.toFixed(3) : "—"}`, rows: best50, label: (s, i) => `B${i + 1}` },
+{ name: "NEW10", note: `${latestVersion} · 平均 ${avg(new10, "rating").toFixed(3)}`, rows: new10, label: (s, i) => `N${i + 1}` },
 ]
 );
 const p50Image = () =>
@@ -555,7 +588,7 @@ drawImage(
 `P-SCORE ${fmtPs(ratingInfo.ps50)}`,
 `プラチナスコア枠：☆数 × 定数² ÷ 1000，取前 50`,
 ratingStats(),
-[{ name: "P-SCORE枠", note: `合计 ${fmtPs(ratingInfo.ps50)} · 最低 ${ps50.length ? fmtPs(ps50[ps50.length - 1].ps_rating) : "—"}`, rows: ps50, label: (s, i) => `P${i + 1}`, mode: "ps" }]
+[{ name: "P-SCORE50", note: `合计 ${fmtPs(ratingInfo.ps50)} · 最低 ${ps50.length ? fmtPs(ps50[ps50.length - 1].ps_rating) : "—"}`, rows: ps50, label: (s, i) => `P${i + 1}`, mode: "ps" }]
 );
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const csvCell = (s) => (/[",\n]/.test(String(s)) ? `"${String(s).replace(/"/g, '""')}"` : String(s));
@@ -615,7 +648,7 @@ filters.innerHTML = [
 group("定数", `<input id="oc-min" type="number" step="0.1" inputmode="decimal" placeholder="下限" style="width:64px;padding:4px;font-size:16px"> 〜 <input id="oc-max" type="number" step="0.1" inputmode="decimal" placeholder="上限" style="width:64px;padding:4px;font-size:16px">`),
 group("等级", sel("oc-lv", `<option value="">全部</option>${levels.map((lv) => `<option>${esc(lv)}</option>`).join("")}`)),
 group("难度", sel("oc-diff", `<option value="">全部</option>${DIFFS.filter((d) => !d.hidden).map((d) => `<option>${d.name}</option>`).join("")}`)),
-group("范围", sel("oc-frame", `<option value="">全部</option><option value="B">ベスト枠(B50)</option><option value="新曲">新曲枠</option><option value="P">P-SCORE枠</option>`)),
+group("范围", sel("oc-frame", `<option value="">全部</option><option value="B">ベスト枠(B50)</option><option value="N">新曲枠</option><option value="P">P-SCORE枠</option>`)),
 group("排序", sel("oc-sort", `<option value="rating">单曲rating</option><option value="const">定数</option><option value="ts">TS</option><option value="ps">P-rating</option>`)),
 group("", `<input id="oc-played" type="checkbox"> 只看已游玩`),
 ].join("");
@@ -665,7 +698,7 @@ panel.appendChild(more);
 const table = (rows, keys) =>
 `<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;background:#fff"><table style="border-collapse:collapse;white-space:nowrap">` +
 `<tr>${keys.map((k) => `<th style="border:1px solid #ccc;padding:2px 6px;background:#eee">${esc(k)}</th>`).join("")}</tr>` +
-rows.map((r) => `<tr${r.frame && /^(B|新曲)/.test(r.frame) ? ' style="background:#fff4d6"' : ""}>${keys.map((k) => {
+rows.map((r) => `<tr${r.frame && /^(B|N)d/.test(r.frame) ? ' style="background:#fff4d6"' : ""}>${keys.map((k) => {
 let v = r[k];
 if (v === true) v = "✓";
 else if (v === false || v == null) v = "";
