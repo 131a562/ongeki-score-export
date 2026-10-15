@@ -1,6 +1,8 @@
 (async () => {
 const NET = "https://ongeki-net.com/ongeki-mobile";
 const CONST_URL = "https://reiwa.f5.si/ongeki_record.json";
+const SYNC_URL_RAW = "https://otoge-sync.131a562-index01.workers.dev"; // build.js 替换为 config.json 的 syncUrl
+const SYNC_URL = /^https?:\/\//.test(SYNC_URL_RAW) ? SYNC_URL_RAW : "";
 const DIFFS = [
 { id: 2, name: "EXPERT", key: "EXP" },
 { id: 3, name: "MASTER", key: "MAS" },
@@ -223,9 +225,11 @@ return;
 }
 log("正在读取游戏内 Rating ...");
 let official = null;
+let playerName = "";
 for (const path of ["/home/playerDataDetail/", "/home/"]) {
 try {
 const { doc } = await getDoc(NET + path);
+playerName = playerName || (doc.querySelector(".name_block span")?.textContent || "").trim();
 const block = doc.querySelector(".rating_new_block .rating_field") || doc.querySelector(".rating_field");
 const value = parseFloat(block?.querySelector("[class^='rating_']")?.textContent || block?.textContent || "");
 if (value > 0) {
@@ -590,6 +594,542 @@ drawImage(
 ratingStats(),
 [{ name: "P-SCORE50", note: `合计 ${fmtPs(ratingInfo.ps50)} · 最低 ${ps50.length ? fmtPs(ps50[ps50.length - 1].ps_rating) : "—"}`, rows: ps50, label: (s, i) => `P${i + 1}`, mode: "ps" }]
 );
+const pad2 = (n) => String(n).padStart(2, "0");
+const nowStr = () => {
+const d = new Date();
+return `${d.getFullYear()}/${pad2(d.getMonth() + 1)}/${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+};
+const normTime = (s) => {
+const m = (s || "").match(/(\d{4})\/(\d{1,2})\/(\d{1,2})\s+(\d{1,2}):(\d{2})/);
+return m ? `${m[1]}/${pad2(m[2])}/${pad2(m[3])} ${pad2(m[4])}:${m[5]}` : null;
+};
+const timeMs = (t) => {
+const m = t.match(/(\d+)\/(\d+)\/(\d+) (\d+):(\d+)/);
+return new Date(+m[1], m[2] - 1, +m[3], +m[4], +m[5]).getTime();
+};
+const byTime = (a, b) => (a.t < b.t ? -1 : a.t > b.t ? 1 : 0);
+const chartKey = (title, diff) => norm(title) + "|" + diff;
+const emptyHist = () => ({ v: 1, game: "ongeki", name: "", obs: [], snaps: [] });
+const obsId = (o) => o.t + "|" + o.k + "|" + o.s + "|" + o.src;
+let playlogSample = ""; // 调试用：プレイ履歴第一条的原始 HTML
+function parsePlaylog(doc) {
+const items = [...doc.querySelectorAll(".container3 > .m_10")];
+if (items.length) playlogSample = items[0].outerHTML.replace(/\s+/g, " ").slice(0, 3000);
+return items.map((el) => {
+const t = normTime(el.querySelector("span.f_r.h_10")?.textContent);
+const n = (el.querySelector(".m_5.l_h_10.break")?.textContent || "").replace(/[\n\t]/g, "").trim();
+const hay = [el, ...el.querySelectorAll("[class], img")]
+.map((x) => `${x.className || ""} ${x.getAttribute?.("src") || ""}`).join(" ").toLowerCase();
+const dm = hay.match(/(lunatic|master|expert|advanced|basic)/);
+let s = 0;
+for (const x of el.querySelectorAll("[class*=technical]")) {
+const v = num((x.textContent.match(/\d{1,3}(,\d{3})+|\d{6,7}/) || [""])[0]);
+if (v > 0 && v <= 1010000) { s = v; break; }
+}
+if (!t || !n || !dm || !s) return null;
+const d = dm[1].toUpperCase();
+if (!DIFFS.some((x) => x.name === d)) return null; // 只记 EXP/MAS/LUN
+const o = { t, k: chartKey(n, d), n, d, s, src: "p" };
+if (/new_?record/i.test(el.innerHTML)) o.nr = 1;
+return o;
+}).filter(Boolean);
+}
+function derive(hist) {
+const pb = {}, updates = [];
+hist.obs.slice().sort(byTime).forEach((o) => {
+const p = pb[o.k];
+if (p == null) {
+pb[o.k] = o.s;
+if (o.src === "p" && o.nr) updates.push({ ...o, f: null });
+} else if (o.s > p) {
+pb[o.k] = o.s;
+updates.push({ ...o, f: p });
+}
+});
+return { pb, updates };
+}
+function mergeHist(a, b) {
+const out = emptyHist();
+out.name = b.name || a.name;
+const seen = new Set();
+[...a.obs, ...b.obs].forEach((o) => {
+const id = obsId(o);
+if (!seen.has(id)) { seen.add(id); out.obs.push(o); }
+});
+out.obs.sort(byTime);
+const snaps = new Map();
+[...a.snaps, ...b.snaps].forEach((s) => snaps.set(s.t, s));
+out.snaps = [...snaps.values()].sort(byTime);
+return out;
+}
+const sameSnap = (a, b) => a && b && a.r === b.r && a.c === b.c &&
+JSON.stringify(a.best) === JSON.stringify(b.best) && JSON.stringify(a.news) === JSON.stringify(b.news);
+function applyUpdate(hist, plays) {
+const t = nowStr();
+if (playerName) hist.name = playerName;
+const ids = new Set(hist.obs.map(obsId));
+plays.forEach((o) => { if (!ids.has(obsId(o))) { ids.add(obsId(o)); hist.obs.push(o); } });
+const { pb } = derive(hist);
+for (const s of all) {
+if (!s.played) continue;
+const k = chartKey(s.title, s.difficulty);
+if (pb[k] == null || s.technical_score > pb[k]) {
+hist.obs.push({ t, k, n: s.title, d: s.difficulty, s: s.technical_score, src: "b" });
+pb[k] = s.technical_score;
+}
+}
+hist.obs.sort(byTime);
+const row = (s) => [chartKey(s.title, s.difficulty), s.title, s.technical_score];
+const snap = {
+t,
+r: official ? official.rating : ratingInfo.total,
+c: ratingInfo.total,
+n10: Math.round(avg(new10, "rating") * 10000) / 10000,
+b50: Math.round(avg(best50, "rating") * 10000) / 10000,
+p: ratingInfo.part.ps50,
+best: best50.map(row),
+news: new10.map(row),
+};
+const last = hist.snaps[hist.snaps.length - 1];
+if (!(sameSnap(last, snap) && last.t.slice(0, 10) === t.slice(0, 10))) hist.snaps.push(snap);
+return hist;
+}
+const histKey = () => "ongeki-hist:" + (playerName || "_");
+const loadLocalHist = () => {
+try {
+const h = JSON.parse(localStorage.getItem(histKey()) || "null");
+return h && h.obs ? h : emptyHist();
+} catch (e) {
+return emptyHist();
+}
+};
+const saveLocalHist = (h) => {
+try { localStorage.setItem(histKey(), JSON.stringify(h)); return true; } catch (e) { return false; }
+};
+const SYNC_GAME = "ongeki";
+const cleanAccount = (s) => s.normalize("NFKC").replace(/[a-z]/g, (c) => c.toUpperCase()).trim()
+.replace(/[\\/:*?"<>|#%\u0000-\u001f]+/g, "_").replace(/\s+/g, " ").replace(/^\.+/, "").slice(0, 40);
+const b64enc = (str) => {
+const bytes = new TextEncoder().encode(str);
+let bin = "";
+for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+return btoa(bin);
+};
+const b64dec = (b64) => {
+const bin = atob(b64.replace(/\s/g, ""));
+const bytes = new Uint8Array(bin.length);
+for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+return new TextDecoder().decode(bytes);
+};
+const syncFetch = async (acc, suffix, init) => {
+let res;
+try {
+res = await fetch(SYNC_URL.replace(/\/+$/, "") + "/" + SYNC_GAME + "/" + encodeURIComponent(acc) + (suffix || ""),
+Object.assign({ cache: "no-store" }, init));
+} catch (e) {
+throw new Error("连不上同步服务");
+}
+if (res.status === 401 || res.status === 403 || res.status >= 500) throw new Error("同步服务出错（HTTP " + res.status + "）");
+return res;
+};
+const syncGet = async (acc) => {
+const res = await syncFetch(acc);
+if (res.status === 404) return { data: null, sha: null };
+if (!res.ok) throw new Error("读取失败 HTTP " + res.status);
+const j = await res.json();
+let text;
+if (j.encoding === "base64" && j.content) text = b64dec(j.content);
+else {
+const raw = await syncFetch(acc, "/raw");
+if (!raw.ok) throw new Error("读取失败 HTTP " + raw.status);
+text = await raw.text();
+}
+try { return { data: JSON.parse(text), sha: j.sha }; } catch (e) { throw new Error("云端数据损坏"); }
+};
+const syncPut = async (acc, data, sha) => {
+const body = { message: "update " + SYNC_GAME + "/" + acc + " " + nowStr(), content: b64enc(JSON.stringify(data)) };
+if (sha) body.sha = sha;
+const res = await syncFetch(acc, "", { method: "PUT", body: JSON.stringify(body), headers: { "Content-Type": "application/json" } });
+if (res.status === 409 || res.status === 422) return false;
+if (!res.ok) throw new Error("写入失败 HTTP " + res.status);
+return true;
+};
+const syncMerge = async (acc, local) => {
+for (let attempt = 0; attempt < 3; attempt++) {
+const { data, sha } = await syncGet(acc);
+const merged = data && data.obs ? mergeHist(data, local) : local;
+if (data && JSON.stringify(data) === JSON.stringify(merged)) return merged;
+if (await syncPut(acc, merged, sha)) return merged;
+}
+throw new Error("多次写入冲突，请稍后再试");
+};
+const ACC_KEY = "ongeki-accounts"; // 这台设备上「オンゲキ玩家名 → 同步用的名字」
+const loadAccounts = () => { try { return JSON.parse(localStorage.getItem(ACC_KEY) || "{}"); } catch (e) { return {}; } };
+const saveAccounts = (a) => { try { localStorage.setItem(ACC_KEY, JSON.stringify(a)); } catch (e) {} };
+const askAccount = async () => {
+for (;;) {
+const input = prompt(
+"历史记录要同步到云端的哪个名字？\n每个人请用不同的名字；换手机时填相同的名字即可接着同步。\n点「取消」= 只保存在本机",
+cleanAccount(playerName || ""));
+if (input == null) return null;
+const acc = cleanAccount(input);
+if (!acc) continue;
+const { data } = await syncGet(acc);
+if (data && data.name && playerName && data.name !== playerName &&
+!confirm(`「${acc}」里已经有玩家「${data.name}」的记录。\n确定要把你的记录也存进去吗？（不是同一个人的话请换一个名字）`)) continue;
+return acc;
+}
+};
+let syncNote = "";
+let hist = emptyHist();
+async function recordAndSync(forceAsk) {
+let plays = [];
+let playNote = "";
+try {
+log("正在读取プレイ履歴 ...");
+plays = parsePlaylog((await getDoc(NET + "/record/playlog/")).doc);
+if (!plays.length) playNote = "（プレイ履歴未能解析，只用成绩扫描）";
+} catch (e) {
+playNote = "（プレイ履歴读取失败）";
+}
+hist = applyUpdate(loadLocalHist(), plays);
+syncNote = (saveLocalHist(hist) ? "历史记录已保存在本机" : "本机存储空间不足，历史记录未保存") + playNote;
+if (!SYNC_URL) return;
+const accounts = loadAccounts();
+const me = playerName || "_";
+let acc = forceAsk ? undefined : accounts[me];
+try {
+if (acc === undefined) {
+await syncFetch("_ping"); // 先确认连得上，连不上就不弹窗询问（抛出的错误会显示在「历史」页）
+acc = await askAccount();
+accounts[me] = acc;
+saveAccounts(accounts);
+}
+if (!acc) { syncNote += "（未开启云端同步）"; return; }
+log("正在同步历史记录 ...");
+hist = await syncMerge(acc, hist);
+saveLocalHist(hist);
+syncNote = "历史记录已同步（" + SYNC_GAME + "/" + acc + "）" + playNote;
+} catch (e) {
+syncNote = "同步失败：" + e.message + "。已保存在本机，下次运行会重试" + playNote;
+}
+}
+await recordAndSync(false);
+const HW = 1200, HP = 32;
+const signed = (x, digits = 3) => (x >= 0 ? "+" : "−") + Math.abs(x).toFixed(digits);
+const newCanvas = (w, h) => {
+const cv = document.createElement("canvas");
+cv.width = w;
+cv.height = h;
+const ctx = cv.getContext("2d");
+if (!ctx) throw new Error(`浏览器无法创建这么大的图片（${w}×${h}）`);
+ctx.fillStyle = C.bg;
+ctx.fillRect(0, 0, w, h);
+ctx.textBaseline = "alphabetic";
+return { cv, ctx };
+};
+const toImage = (cv) => new Promise((resolve, reject) => {
+try {
+cv.toBlob((b) => (b ? resolve({ blob: b, url: URL.createObjectURL(b) }) : reject(new Error("toBlob failed"))), "image/png");
+} catch (e) {
+reject(e);
+}
+});
+function histStat(ctx, label, value, right, color, big) {
+ctx.textAlign = "right";
+ctx.fillStyle = C.muted;
+ctx.font = f(700, 14);
+ctx.fillText(label, right, 52);
+ctx.fillStyle = color;
+ctx.font = f(800, big ? 46 : 32);
+ctx.fillText(value, right, 100);
+ctx.textAlign = "left";
+}
+function histSection(ctx, label, y, color) {
+ctx.fillStyle = C.line;
+ctx.fillRect(HP, y, HW - HP * 2, 1);
+ctx.fillStyle = color;
+ctx.font = f(800, 20);
+ctx.fillText(label, HP, y + 32);
+}
+function diffBadge(ctx, d, x, y, extra) {
+return pill(ctx, (DIFF_SHORT[d] || d) + (extra ? " " + extra : ""), x, y, C[d] || C.muted, 13);
+}
+function lineChart(ctx, x, y, w, h, series, opt) {
+const pts = series.flatMap((s) => s.pts);
+if (!pts.length) return;
+let t0 = Math.min(...pts.map((p) => p[0])), t1 = Math.max(...pts.map((p) => p[0]));
+let v0 = Math.min(...pts.map((p) => p[1])), v1 = Math.max(...pts.map((p) => p[1]));
+if (t1 - t0 < 864e5) { t0 -= 432e5; t1 += 432e5; }
+const span = Math.max(v1 - v0, opt.minSpan);
+const mid = (v0 + v1) / 2;
+v0 = mid - span * 0.6;
+v1 = mid + span * 0.6;
+if (opt.maxV != null) v1 = Math.min(v1, opt.maxV);
+const L = x + 90, R = x + w - 16, T = y + 16, B = y + h - 70;
+const X = (t) => L + ((t - t0) / (t1 - t0)) * (R - L);
+const Y = (v) => B - ((v - v0) / (v1 - v0)) * (B - T);
+rrect(ctx, x, y, w, h, 12);
+ctx.fillStyle = C.card;
+ctx.fill();
+ctx.font = f(500, 14);
+ctx.textAlign = "right";
+for (let i = 0; i <= 4; i++) {
+const v = v0 + ((v1 - v0) * i) / 4;
+ctx.strokeStyle = "rgba(255,255,255,0.08)";
+ctx.lineWidth = 1;
+ctx.beginPath(); ctx.moveTo(L, Y(v)); ctx.lineTo(R, Y(v)); ctx.stroke();
+ctx.fillStyle = C.muted;
+ctx.fillText(opt.fmt(v), L - 10, Y(v) + 5);
+}
+(opt.refs || []).forEach((r) => {
+if (r.v < v0 || r.v > v1) return;
+ctx.strokeStyle = "rgba(255,211,107,0.35)";
+ctx.setLineDash([6, 6]);
+ctx.beginPath(); ctx.moveTo(L, Y(r.v)); ctx.lineTo(R, Y(r.v)); ctx.stroke();
+ctx.setLineDash([]);
+ctx.fillStyle = C["SSS+"];
+ctx.textAlign = "left";
+ctx.fillText(r.label, L + 6, Y(r.v) - 5);
+ctx.textAlign = "right";
+});
+ctx.textAlign = "center";
+ctx.fillStyle = C.muted;
+const ticks = Math.min(6, Math.max(2, Math.round((t1 - t0) / 864e5) + 1));
+for (let i = 0; i < ticks; i++) {
+const t = t0 + ((t1 - t0) * i) / (ticks - 1);
+const d = new Date(t);
+ctx.fillText(`${d.getMonth() + 1}/${d.getDate()}`, X(t), B + 24);
+}
+ctx.textAlign = "left";
+series.forEach((s) => {
+if (!s.pts.length) return;
+ctx.strokeStyle = s.color;
+ctx.fillStyle = s.color;
+ctx.lineWidth = s.width || 3;
+if (s.line !== false) {
+ctx.beginPath();
+s.pts.forEach((p, i) => {
+if (i === 0) ctx.moveTo(X(p[0]), Y(p[1]));
+else if (s.step) { ctx.lineTo(X(p[0]), Y(s.pts[i - 1][1])); ctx.lineTo(X(p[0]), Y(p[1])); }
+else ctx.lineTo(X(p[0]), Y(p[1]));
+});
+if (s.step) ctx.lineTo(R, Y(s.pts[s.pts.length - 1][1]));
+ctx.stroke();
+}
+if (s.dots !== false) s.pts.forEach((p) => { ctx.beginPath(); ctx.arc(X(p[0]), Y(p[1]), s.dot || 4, 0, Math.PI * 2); ctx.fill(); });
+});
+let lx = L;
+series.forEach((s) => {
+if (!s.label) return;
+ctx.fillStyle = s.color;
+ctx.fillRect(lx, y + h - 22, 18, 4);
+ctx.fillStyle = C.fg;
+ctx.font = f(500, 14);
+ctx.fillText(s.label, lx + 24, y + h - 15);
+lx += 40 + ctx.measureText(s.label).width;
+});
+}
+async function drawTrend() {
+const { updates } = derive(hist);
+const snaps = hist.snaps;
+const last = snaps[snaps.length - 1], prev = snaps[snaps.length - 2];
+const changes = { inn: [], out: [], up: [], upMore: 0 };
+if (last && prev) {
+const toMap = (s) => new Map([...s.best, ...s.news].map((e) => [e[0], e]));
+const a = toMap(prev), b = toMap(last);
+b.forEach((e, k) => {
+if (!a.has(k)) changes.inn.push(e);
+else if (e[2] > a.get(k)[2]) changes.up.push([...e, a.get(k)[2]]);
+});
+a.forEach((e, k) => { if (!b.has(k)) changes.out.push(e); });
+changes.up.sort((p, q) => (q[2] - q[3]) - (p[2] - p[3]));
+changes.upMore = Math.max(0, changes.up.length - 10);
+changes.up = changes.up.slice(0, 10);
+}
+const recent = updates.slice(-20).reverse();
+const ROW = 34;
+const changeRows = Math.max(changes.inn.length + changes.up.length + (changes.upMore ? 1 : 0), changes.out.length, 1);
+const H = 150 + 360 + 20 + 300 + 30 + 64 + changeRows * ROW + 30 + 64 + Math.max(recent.length, 1) * ROW + 50;
+const { cv, ctx } = newCanvas(HW, H);
+ctx.fillStyle = C.accent;
+ctx.font = f(800, 16);
+ctx.fillText("O.N.G.E.K.I.  RATING HISTORY", HP, 42);
+ctx.fillStyle = C.fg;
+ctx.font = f(800, 42);
+ctx.fillText(fit(ctx, playerName || hist.name || "", 520), HP, 96);
+const at = (ms) => [...snaps].reverse().find((s) => timeMs(s.t) <= ms) || snaps[0];
+if (last) {
+histStat(ctx, "RATING", last.r.toFixed(3), HW - HP, C["SSS+"], true);
+const d30 = at(Date.now() - 30 * 864e5);
+histStat(ctx, "30 天", d30 ? signed(last.r - d30.r) : "-", HW - HP - 230, C.plat);
+histStat(ctx, "累计", signed(last.r - snaps[0].r), HW - HP - 400, C.accent);
+}
+ctx.fillStyle = C.muted;
+ctx.font = f(500, 14);
+ctx.fillText(`${snaps.length} 个快照${snaps[0] ? `（${snaps[0].t.slice(0, 10)} – ${last.t.slice(0, 10)}）` : ""}`, HP, 128);
+let y = 150;
+const pts = (fn) => snaps.filter((s) => fn(s) != null).map((s) => [timeMs(s.t), fn(s)]);
+lineChart(ctx, HP, y, HW - HP * 2, 360, [
+{ label: "RATING（游戏内）", color: C["SSS+"], pts: pts((s) => s.r), width: 4 },
+], { minSpan: 0.05, fmt: (v) => v.toFixed(3) });
+if (snaps.length === 1) {
+ctx.fillStyle = C.muted;
+ctx.font = f(500, 16);
+ctx.textAlign = "center";
+ctx.fillText("目前只有 1 个快照，多运行几次后就能看到曲线", HW / 2, y + 60);
+ctx.textAlign = "left";
+}
+y += 380;
+lineChart(ctx, HP, y, HW - HP * 2, 300, [
+{ label: "BEST50 平均", color: C.accent, pts: pts((s) => s.b50), width: 3, dot: 3 },
+{ label: "NEW10 平均", color: C.plat, pts: pts((s) => s.n10), width: 3, dot: 3 },
+], { minSpan: 0.05, fmt: (v) => v.toFixed(3) });
+y += 330;
+histSection(ctx, "BEST50 / NEW10 变化" + (prev ? `（对比 ${prev.t}）` : ""), y, C.accent);
+y += 64;
+const colW = (HW - HP * 2 - 24) / 2;
+const rowText = (x, yy, e, color, right) => {
+const d = e[0].split("|").pop();
+const bw = diffBadge(ctx, d, x, yy);
+ctx.fillStyle = C.fg;
+ctx.font = f(500, 16);
+ctx.fillText(fit(ctx, e[1], colW - bw - 190), x + bw + 8, yy);
+ctx.textAlign = "right";
+ctx.fillStyle = color;
+ctx.font = f(700, 16);
+ctx.fillText(right, x + colW - 6, yy);
+ctx.textAlign = "left";
+};
+ctx.font = f(700, 15);
+if (!prev) {
+ctx.fillStyle = C.muted;
+ctx.fillText("还没有上一次的快照可以对比", HP, y);
+} else if (!changes.inn.length && !changes.out.length && !changes.up.length) {
+ctx.fillStyle = C.muted;
+ctx.fillText("和上次相比没有变化", HP, y);
+} else {
+let yy = y;
+changes.inn.forEach((e) => { rowText(HP, yy, e, "#7ee0a0", "新进 " + e[2].toLocaleString("en-US")); yy += ROW; });
+changes.up.forEach((e) => { rowText(HP, yy, e, C["SSS+"], `+${(e[2] - e[3]).toLocaleString("en-US")} → ${e[2].toLocaleString("en-US")}`); yy += ROW; });
+if (changes.upMore) {
+ctx.fillStyle = C.muted;
+ctx.font = f(500, 15);
+ctx.fillText(`另有 ${changes.upMore} 首分数提升`, HP, yy);
+}
+yy = y;
+changes.out.forEach((e) => { rowText(HP + colW + 24, yy, e, "#ff8a8a", "移出 " + e[2].toLocaleString("en-US")); yy += ROW; });
+}
+y += changeRows * ROW + 6;
+histSection(ctx, "最近的个人最佳更新", y, C["SSS+"]);
+y += 64;
+if (!recent.length) {
+ctx.fillStyle = C.muted;
+ctx.font = f(700, 15);
+ctx.fillText("暂无记录。成绩扫描发现更高分、或プレイ履歴里出现刷新记录时会记在这里", HP, y);
+}
+recent.forEach((o) => {
+ctx.fillStyle = C.muted;
+ctx.font = f(500, 14);
+ctx.fillText(o.t + (o.src === "b" ? "*" : ""), HP, y);
+const bw = diffBadge(ctx, o.d, HP + 150, y);
+ctx.fillStyle = C.fg;
+ctx.font = f(500, 16);
+ctx.fillText(fit(ctx, o.n, HW - HP * 2 - 150 - bw - 340), HP + 150 + bw + 8, y);
+ctx.textAlign = "right";
+ctx.fillStyle = C.muted;
+ctx.font = f(500, 15);
+ctx.fillText(o.f != null ? o.f.toLocaleString("en-US") + " →" : "NEW RECORD", HW - HP - 210, y);
+ctx.fillStyle = C[rankOf(o.s)] || C.fg;
+ctx.font = f(800, 17);
+ctx.fillText(`${o.s.toLocaleString("en-US")}  ${rankOf(o.s)}`, HW - HP - 70, y);
+ctx.fillStyle = "#7ee0a0";
+ctx.font = f(700, 14);
+ctx.fillText(o.f != null ? "+" + (o.s - o.f).toLocaleString("en-US") : "", HW - HP, y);
+ctx.textAlign = "left";
+y += ROW;
+});
+ctx.fillStyle = C.muted;
+ctx.font = f(500, 13);
+ctx.fillText(`${new Date().toLocaleString("ja-JP")}  ·  * = 由成绩扫描发现（时间为运行书签的时间）`, HP, H - 18);
+return toImage(cv);
+}
+async function drawSongCurve(e) {
+const obs = hist.obs.filter((o) => o.k === e.k).sort(byTime);
+const plays = obs.filter((o) => o.src === "p");
+const pbPts = [];
+let best = -1;
+obs.forEach((o) => { if (o.s > best) { best = o.s; pbPts.push([timeMs(o.t), o.s]); } });
+const chart = all.find((s) => chartKey(s.title, s.difficulty) === e.k);
+const jacket = chart ? await loadJacket(chart.img) : null;
+const rows = plays.slice(-15).reverse();
+const ROW = 32;
+const H = 170 + 400 + 30 + 64 + Math.max(rows.length, 1) * ROW + 50;
+const { cv, ctx } = newCanvas(HW, H);
+const J = 120;
+if (jacket) {
+ctx.save();
+rrect(ctx, HP, 24, J, J, 10);
+ctx.clip();
+ctx.drawImage(jacket, HP, 24, J, J);
+ctx.restore();
+}
+const tx = jacket ? HP + J + 20 : HP;
+ctx.fillStyle = C.accent;
+ctx.font = f(800, 16);
+ctx.fillText("O.N.G.E.K.I.  SCORE HISTORY  ·  " + (playerName || hist.name || ""), tx, 46);
+ctx.fillStyle = C.fg;
+ctx.font = f(800, 36);
+ctx.fillText(fit(ctx, e.n, HW - tx - 300), tx, 92);
+if (chart) constPill(ctx, chart, tx, 128, C[chart.difficulty] || C.muted, 14);
+else diffBadge(ctx, e.d, tx, 128);
+histStat(ctx, "BEST", best > 0 ? best.toLocaleString("en-US") : "-", HW - HP, C["SSS+"], true);
+ctx.fillStyle = C.muted;
+ctx.font = f(500, 14);
+ctx.textAlign = "right";
+ctx.fillText(`${best > 0 ? rankOf(best) : ""}${chart && chart.rating ? "　·　单曲 Rating " + chart.rating.toFixed(3) : ""}　·　记录到 ${plays.length} 次游玩`, HW - HP, 128);
+ctx.textAlign = "left";
+let y = 170;
+lineChart(ctx, HP, y, HW - HP * 2, 400, [
+{ label: "个人最佳", color: C["SSS+"], pts: pbPts, step: true, dots: false, width: 3 },
+{ label: "每次游玩", color: C.plat, pts: plays.map((o) => [timeMs(o.t), o.s]), line: false, dot: 5 },
+], {
+minSpan: 4000, maxV: 1010000, fmt: (v) => Math.round(v).toLocaleString("en-US"),
+refs: [{ v: 1007500, label: "SSS+" }, { v: 1000000, label: "SSS" }, { v: 990000, label: "SS" }, { v: 970000, label: "S" }],
+});
+y += 430;
+histSection(ctx, "最近的游玩", y, C.plat);
+y += 64;
+if (!rows.length) {
+ctx.fillStyle = C.muted;
+ctx.font = f(700, 15);
+ctx.fillText("还没有这首歌的プレイ履歴记录（只有成绩扫描的数据）", HP, y);
+}
+const pbAt = new Map();
+let runBest = -1;
+obs.forEach((o) => { if (o.src === "p") pbAt.set(o, runBest); if (o.s > runBest) runBest = o.s; });
+rows.forEach((o) => {
+ctx.fillStyle = C.muted;
+ctx.font = f(500, 15);
+ctx.fillText(o.t, HP, y);
+ctx.fillStyle = C.fg;
+ctx.font = f(800, 18);
+ctx.fillText(o.s.toLocaleString("en-US"), HP + 200, y);
+ctx.fillStyle = C[rankOf(o.s)] || C.fg;
+ctx.font = f(800, 15);
+ctx.fillText(rankOf(o.s), HP + 330, y);
+const before = pbAt.get(o);
+ctx.font = f(700, 15);
+if (before >= 0 && o.s > before) { ctx.fillStyle = "#7ee0a0"; ctx.fillText("NEW RECORD  +" + (o.s - before).toLocaleString("en-US"), HP + 410, y); }
+else if (before < 0 && o.nr) { ctx.fillStyle = "#7ee0a0"; ctx.fillText("NEW RECORD", HP + 410, y); }
+else if (before >= 0) { ctx.fillStyle = C.muted; ctx.font = f(500, 14); ctx.fillText("距最佳 −" + (before - o.s).toLocaleString("en-US"), HP + 410, y); }
+y += ROW;
+});
+ctx.fillStyle = C.muted;
+ctx.font = f(500, 13);
+ctx.fillText(`${new Date().toLocaleString("ja-JP")}  ·  data: オンゲキ-NET プレイ履歴 / 成绩扫描`, HP, H - 18);
+return toImage(cv);
+}
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const csvCell = (s) => (/[",\n]/.test(String(s)) ? `"${String(s).replace(/"/g, '""')}"` : String(s));
 const toCsv = (rows, keys = Object.keys(rows[0])) =>
@@ -636,7 +1176,7 @@ parent.appendChild(b);
 return b;
 };
 const tabs = {};
-for (const [k, label] of [["b50", "B50 图"], ["p50", "P50 图"], ["filter", "筛选图"], ["table", "表格"]]) {
+for (const [k, label] of [["b50", "B50 图"], ["p50", "P50 图"], ["filter", "筛选图"], ["table", "表格"], ["history", "历史"]]) {
 tabs[k] = mkBtn(label, () => { tab = k; render(); });
 }
 mkBtn("关闭", () => panel.remove());
@@ -676,6 +1216,8 @@ official,
 unknownConst: charts.filter((s) => s.played && s.const_unknown).map((s) => `${s.difficulty} ${s.title} (${s.const_unknown})`),
 matchLog,
 sampleHtml: sampleHtml.replace(/\s+/g, " ").slice(0, 3000),
+playlogSample,
+history: { snaps: hist.snaps.length, obs: hist.obs.length, plays: hist.obs.filter((o) => o.src === "p").length, syncNote },
 }, null, 1);
 let box = more.querySelector("textarea");
 if (!box) {
@@ -709,8 +1251,8 @@ return `<td style="border:1px solid #ccc;padding:2px 6px">${esc(v)}</td>`;
 }).join("")}</tr>`).join("") +
 `</table></div>`;
 more.insertAdjacentHTML("beforeend", table(summary, Object.keys(summary[0])));
-const showImage = ({ url, blob }, name) => {
-view.innerHTML = "";
+const showImage = ({ url, blob }, name, target = view) => {
+target.innerHTML = "";
 const tip = document.createElement("div");
 tip.style.cssText = "display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:6px;color:#555";
 mkBtn("保存图片", () => saveFile(name, blob), tip);
@@ -719,7 +1261,7 @@ const img = new Image();
 img.src = url;
 img.alt = name;
 img.style.cssText = "width:100%;height:auto;display:block;border-radius:8px;-webkit-touch-callout:default;-webkit-user-select:auto;user-select:auto;pointer-events:auto";
-view.append(tip, img);
+target.append(tip, img);
 };
 const imageCache = {};
 let timer = null;
@@ -754,14 +1296,90 @@ if (frame) desc.push($("oc-frame").selectedOptions[0].text);
 if (onlyPlayed) desc.push("只看已游玩");
 return desc;
 }
+async function renderHistory(seq) {
+view.innerHTML = "";
+const card = (css) => {
+const d = document.createElement("div");
+d.style.cssText = "background:#fff;border-radius:10px;padding:10px;margin-bottom:8px;line-height:1.7;" + (css || "");
+view.appendChild(d);
+return d;
+};
+const { pb, updates } = derive(hist);
+const info = card();
+info.innerHTML = `<div>${esc(syncNote)}</div><div style="color:#555">${hist.snaps.length} 个 Rating 快照${hist.snaps[0] ? "（" + hist.snaps[0].t.slice(0, 10) + " 起）" : ""} · ` +
+`${hist.obs.filter((o) => o.src === "p").length} 条游玩记录 · ${updates.length} 次个人最佳更新</div>`;
+if (SYNC_URL) {
+const row = document.createElement("div");
+row.style.cssText = "margin-top:6px";
+mkBtn("更改同步名字", async () => {
+await recordAndSync(true);
+imageCache.trend = null;
+render();
+}, row);
+info.appendChild(row);
+}
+const songs = new Map();
+hist.obs.forEach((o) => {
+const e = songs.get(o.k) || { k: o.k, n: o.n, d: o.d, plays: 0, last: "" };
+if (o.src === "p") e.plays++;
+if (o.t > e.last) e.last = o.t;
+songs.set(o.k, e);
+});
+const search = card();
+search.innerHTML = '<b>单曲分数曲线</b><input id="oc-hq" placeholder="输入曲名搜索" autocomplete="off" ' +
+'style="display:block;width:100%;box-sizing:border-box;margin:6px 0;padding:6px 8px;font-size:16px"><div id="oc-hlist"></div>';
+const curveBox = card("display:none");
+const trendBox = card("padding:0;background:none");
+trendBox.textContent = "正在生成走势图…";
+const listEl = search.querySelector("#oc-hlist");
+const renderList = () => {
+const q = norm(search.querySelector("#oc-hq").value).toLowerCase();
+const items = [...songs.values()]
+.filter((e) => !q || norm(e.n).toLowerCase().includes(q))
+.sort((a, b) => b.plays - a.plays || (a.last < b.last ? 1 : -1))
+.slice(0, 30);
+listEl.innerHTML = items.length ? "" : '<div style="color:#888">没有记录</div>';
+for (const e of items) {
+const b = document.createElement("button");
+b.style.cssText = "display:flex;width:100%;align-items:center;gap:6px;text-align:left;margin:3px 0;padding:7px 8px;" +
+"border:1px solid #ddd;border-radius:8px;background:#fafafa;color:#222;font-size:14px";
+b.innerHTML = `<span style="background:${C[e.d] || "#999"};color:#16151c;border-radius:4px;padding:0 5px;font-size:12px;font-weight:bold">${DIFF_SHORT[e.d] || e.d}</span>` +
+`<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.n)}</span>` +
+`<span style="color:#777;font-size:12px">${(pb[e.k] || 0).toLocaleString("en-US")} · ${e.plays} 次</span>`;
+b.onclick = async () => {
+curveBox.style.display = "";
+curveBox.textContent = "正在生成…";
+curveBox.scrollIntoView({ behavior: "smooth", block: "start" });
+try {
+showImage(await drawSongCurve(e), `ongeki_${e.n.replace(/[\\/:*?"<>|\s]+/g, "_").slice(0, 40)}_${stamp}.png`, curveBox);
+} catch (err) {
+curveBox.textContent = "生成失败：" + err;
+}
+};
+listEl.appendChild(b);
+}
+};
+search.querySelector("#oc-hq").oninput = renderList;
+renderList();
+try {
+const img = imageCache.trend = imageCache.trend || (await drawTrend());
+if (seq === renderSeq) showImage(img, `ongeki_history_${stamp}.png`, trendBox);
+} catch (err) {
+trendBox.textContent = "走势图生成失败：" + err;
+}
+}
 async function render() {
 const seq = ++renderSeq;
 for (const [k, b] of Object.entries(tabs)) {
 b.style.background = k === tab ? "#d1127a" : "#fff";
 b.style.color = k === tab ? "#fff" : "#222";
 }
-filters.style.display = tab === "b50" || tab === "p50" ? "none" : "flex";
+filters.style.display = tab === "b50" || tab === "p50" || tab === "history" ? "none" : "flex";
 const desc = filterRows();
+if (tab === "history") {
+renderHistory(seq);
+return;
+}
 if (tab === "table") {
 const played = shownRows.filter((s) => s.played);
 view.innerHTML =
