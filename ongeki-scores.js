@@ -671,17 +671,14 @@ return new Date(+m[1], m[2] - 1, +m[3], +m[4], +m[5]).getTime();
 };
 const byTime = (a, b) => (a.t < b.t ? -1 : a.t > b.t ? 1 : 0);
 const chartKey = (title, diff) => norm(title) + "|" + diff;
-const HIST_V = 3;
+const HIST_V = 4;
 const emptyHist = () => ({ v: HIST_V, game: "ongeki", name: "", since: "", obs: [], snaps: [] });
 const playId = (o) => `${o.t}|${norm(o.n)}|${o.d}|${o.s}`;
 const obsId = (o) => (o.src === "p" ? "p|" + playId(o) : [o.t, o.k, o.s, o.src].join("|") +
 (o.l != null ? "|l" + o.l : "") + (o.fb != null ? "|fb" + o.fb : "") + (o.ps != null ? "|ps" + o.ps + "/" + o.st : ""));
 function migrateHist(h) {
-if (!h || !h.obs) return emptyHist();
-if (h.v === HIST_V) return h;
-const firstScan = h.obs.filter((o) => o.src === "b").map((o) => o.t).sort()[0] || "";
-const since = firstScan || [...h.snaps.map((s) => s.t)].sort()[0] || "";
-return { ...h, v: HIST_V, since, obs: h.obs.filter((o) => o.t >= since), snaps: h.snaps.filter((s) => s.t >= since) };
+if (!h || !h.obs || h.v !== HIST_V) return emptyHist();
+return h;
 }
 const LAMP_RANK = { "": 0, FC: 1, AB: 2, "AB+": 3 };
 const lampOf = (s) => (s.lamp === "AB+" || s.lamp === "AB" || s.lamp === "FC" ? s.lamp : "");
@@ -1420,23 +1417,35 @@ let y = 170;
 const CHART_MIN = 940000;
 const shownPlays = plays.filter((o) => o.s >= CHART_MIN);
 const shownPb = pbPts.filter((pt) => pt[1] >= CHART_MIN);
-if (!shownPlays.length && !shownPb.length) {
+const chartOpt = {
+minSpan: 4000, maxV: 1010000, fmt: (v) => Math.round(v).toLocaleString("en-US"),
+refs: [{ v: 1007500, label: "SSS+" }, { v: 1000000, label: "SSS" }, { v: 990000, label: "SS" }, { v: 970000, label: "S" }],
+};
+const placeholder = (text) => {
 rrect(ctx, HP, y, HW - HP * 2, 400, 12);
 ctx.fillStyle = C.card;
 ctx.fill();
 ctx.fillStyle = C.muted;
 ctx.font = f(500, 16);
 ctx.textAlign = "center";
-ctx.fillText("还没有 AAA（940,000）以上的成绩，曲线图只画 AAA 以上的成绩", HW / 2, y + 200);
+ctx.fillText(text, HW / 2, y + 200);
 ctx.textAlign = "left";
-}
+};
+const playSeries = { label: "每次游玩（AAA 以上）", color: C.plat, pts: shownPlays.map((o) => [timeMs(o.t), o.s]), line: false, dot: 5 };
+if (shownPlays.length >= 2) {
 lineChart(ctx, HP, y, HW - HP * 2, 400, [
-...(shownPlays.length >= 2 ? [{ label: "个人最佳", color: C["SSS+"], pts: shownPb, step: true, dots: false, width: 3 }] : []),
-{ label: "每次游玩（AAA 以上）", color: C.plat, pts: shownPlays.map((o) => [timeMs(o.t), o.s]), line: false, dot: 5 },
-], {
-minSpan: 4000, maxV: 1010000, fmt: (v) => Math.round(v).toLocaleString("en-US"),
-refs: [{ v: 1007500, label: "SSS+" }, { v: 1000000, label: "SSS" }, { v: 990000, label: "SS" }, { v: 970000, label: "S" }],
-});
+{ label: "个人最佳", color: C["SSS+"], pts: shownPb, step: true, dots: false, width: 3 }, playSeries,
+], chartOpt);
+} else if (shownPb.length >= 2) {
+lineChart(ctx, HP, y, HW - HP * 2, 400, [
+{ label: "个人最佳（成绩扫描）", color: C["SSS+"], pts: shownPb, step: true, dot: 4, width: 3 },
+...(shownPlays.length ? [playSeries] : []),
+], chartOpt);
+} else if (!shownPb.length) {
+placeholder("还没有 AAA（940,000）以上的成绩，曲线图只画 AAA 以上的成绩");
+} else {
+placeholder(`目前只记录到 1 个最佳分数（${best.toLocaleString("en-US")}），还没有可画的变化；分数提升、或プレイ履歴里出现游玩后就能画出曲线`);
+}
 y += 430;
 histSection(ctx, "推分记录", y, C["SSS+"]);
 y += 64;
