@@ -862,10 +862,14 @@ out.resetAt = [a.resetAt || "", b.resetAt || ""].sort().pop();
 const sinces = [a.since, b.since].filter(Boolean).sort();
 out.since = sinces[0] || "";
 if (out.resetAt && out.resetAt > out.since) out.since = out.resetAt;
-const seen = new Set();
+const seen = new Map();
 [...a.obs, ...b.obs].forEach((o) => {
 const id = obsId(o);
-if (!seen.has(id)) { seen.add(id); out.obs.push(o); }
+const prev = seen.get(id);
+if (!prev) { const c = { ...o }; seen.set(id, c); out.obs.push(c); return; }
+if (prev.l == null && o.l != null) prev.l = o.l;
+if (prev.fb == null && o.fb != null) prev.fb = o.fb;
+if (String(prev.k).endsWith("|?") && !String(o.k).endsWith("|?")) prev.k = o.k;
 });
 out.obs = out.obs.filter((o) => o.t >= out.since).sort(byTime);
 const snaps = new Map();
