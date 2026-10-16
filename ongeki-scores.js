@@ -483,12 +483,58 @@ const ps = s.platinum_score
 : "PS —";
 text(ps, L, y + 114, f(600, 11), C.muted, TW - mainW - 8);
 }
-async function drawImage(title, subtitle, stats, sections) {
-const { W, PAD, COLS, GAP, CH, HEAD, SEC, FOOT, CW } = IMG;
+const SIDE = { CW: 206, CH: 62, GAP: 6, COLS: 2, MARGIN: 24 };
+SIDE.W = SIDE.CW * SIDE.COLS + SIDE.GAP * (SIDE.COLS - 1);
+function drawPCard(ctx, s, label, x, y, jacket) {
+const { CW, CH } = SIDE;
+rrect(ctx, x, y, CW, CH, 8);
+ctx.fillStyle = C.card;
+ctx.fill();
+ctx.save();
+rrect(ctx, x, y, CW, CH, 8);
+ctx.clip();
+if (jacket) ctx.drawImage(jacket, x, y, CH, CH);
+else { ctx.fillStyle = C.line; ctx.fillRect(x, y, CH, CH); }
+ctx.fillStyle = C[s.difficulty] || C.muted;
+ctx.fillRect(x, y + CH - 4, CH, 4);
+ctx.restore();
+ctx.font = f(800, 11);
+const lw = ctx.measureText(label).width + 8;
+rrect(ctx, x + 3, y + 3, lw, 16, 4);
+ctx.fillStyle = "rgba(0,0,0,.72)";
+ctx.fill();
+ctx.fillStyle = "#fff";
+ctx.fillText(label, x + 7, y + 15);
+const L = x + CH + 8, R = x + CW - 8;
+ctx.font = f(700, 13);
+ctx.fillStyle = C.fg;
+ctx.fillText(fit(ctx, s.title, R - L), L, y + 18);
+const pw = constPill(ctx, s, L, y + 37, C[s.difficulty] || C.muted, 10);
+if (s.platinum_max) {
+ctx.font = f(600, 10);
+ctx.fillStyle = C.muted;
+const pct = ((s.platinum_score / s.platinum_max) * 100).toFixed(1) + "%";
+const w = ctx.measureText(pct).width;
+if (L + pw + 6 + w <= R) ctx.fillText(pct, R - w, y + 37);
+}
+drawStars(ctx, s.platinum_star, L + 53, y + 56, 9, 2);
+ctx.font = f(800, 15);
+ctx.fillStyle = C.plat;
+const t = fmtPs(s.ps_rating);
+ctx.fillText(t, R - ctx.measureText(t).width, y + 57);
+}
+async function drawImage(title, subtitle, stats, sections, side) {
+const { PAD, COLS, GAP, CH, HEAD, SEC, FOOT, CW } = IMG;
+const mainRight = IMG.W - PAD; // 主区域（大卡片）的右边界
+const sideX = mainRight + SIDE.MARGIN;
+const W = side ? sideX + SIDE.W + PAD : IMG.W;
 const rowsOf = (n) => Math.max(1, Math.ceil(n / COLS));
-const H = HEAD + sections.reduce((h, sec) => h + SEC + rowsOf(sec.rows.length) * (CH + GAP), 0) + FOOT;
+const mainH = sections.reduce((h, sec) => h + SEC + rowsOf(sec.rows.length) * (CH + GAP), 0);
+const sideH = side ? SEC + Math.ceil(side.rows.length / SIDE.COLS) * (SIDE.CH + SIDE.GAP) : 0;
+const H = HEAD + Math.max(mainH, sideH) + FOOT;
 const jackets = new Map();
-await Promise.all(sections.flatMap((sec) => sec.rows).map(async (s) => jackets.set(s, await loadJacket(s.img))));
+await Promise.all([...sections.flatMap((sec) => sec.rows), ...(side ? side.rows : [])]
+.map(async (s) => jackets.set(s, await loadJacket(s.img))));
 const cv = document.createElement("canvas");
 cv.width = W;
 cv.height = H;
@@ -521,10 +567,32 @@ ctx.fillStyle = C.muted;
 ctx.font = f(500, 13);
 ctx.fillText(fit(ctx, note, boxW - 28), bx + 14, 122);
 });
+if (side) {
+ctx.fillStyle = C.line;
+ctx.fillRect(sideX, HEAD + 6, SIDE.W, 1);
+ctx.fillStyle = C.fg;
+ctx.font = f(800, 20);
+ctx.fillText(side.name, sideX, HEAD + 34);
+if (side.note) {
+const nw = ctx.measureText(side.name).width;
+ctx.font = f(500, 13);
+ctx.fillStyle = C.muted;
+ctx.fillText(fit(ctx, side.note, SIDE.W - nw - 10), sideX + nw + 10, HEAD + 34);
+}
+if (!side.rows.length) {
+ctx.font = f(500, 14);
+ctx.fillStyle = C.muted;
+ctx.fillText("还没有拿到☆的谱面", sideX, HEAD + SEC + 30);
+}
+side.rows.forEach((s, i) => {
+drawPCard(ctx, s, side.label(s, i), sideX + (i % SIDE.COLS) * (SIDE.CW + SIDE.GAP),
+HEAD + SEC + Math.floor(i / SIDE.COLS) * (SIDE.CH + SIDE.GAP), jackets.get(s));
+});
+}
 let y = HEAD;
 for (const sec of sections) {
 ctx.fillStyle = C.line;
-ctx.fillRect(PAD, y + 6, W - PAD * 2, 1);
+ctx.fillRect(PAD, y + 6, mainRight - PAD, 1);
 ctx.fillStyle = C.fg;
 ctx.font = f(800, 20);
 ctx.fillText(sec.name, PAD, y + 34);
@@ -562,7 +630,7 @@ return { blob, url: URL.createObjectURL(blob) };
 } catch (e) {
 if (jackets.size) {
 for (const k of jacketCache.keys()) jacketCache.set(k, Promise.resolve(null));
-return drawImage(title, subtitle, stats, sections);
+return drawImage(title, subtitle, stats, sections, side);
 }
 throw e;
 }
@@ -585,14 +653,8 @@ ratingStats(),
 [
 { name: "BEST50", note: `平均 ${avg(best50, "rating").toFixed(3)} · 最低 ${best50.length ? best50[best50.length - 1].rating.toFixed(3) : "—"}`, rows: best50, label: (s, i) => `B${i + 1}` },
 { name: "NEW10", note: `${latestVersion} · 平均 ${avg(new10, "rating").toFixed(3)}`, rows: new10, label: (s, i) => `N${i + 1}` },
-]
-);
-const p50Image = () =>
-drawImage(
-`P-SCORE ${fmtPs(ratingInfo.ps50)}`,
-`プラチナスコア枠：☆数 × 定数² ÷ 1000，取前 50`,
-ratingStats(),
-[{ name: "P-SCORE50", note: `合计 ${fmtPs(ratingInfo.ps50)} · 最低 ${ps50.length ? fmtPs(ps50[ps50.length - 1].ps_rating) : "—"}`, rows: ps50, label: (s, i) => `P${i + 1}`, mode: "ps" }]
+],
+{ name: "P-SCORE50", note: `合计 ${fmtPs(ratingInfo.ps50)} · 最低 ${ps50.length ? fmtPs(ps50[ps50.length - 1].ps_rating) : "—"}`, rows: ps50, label: (s, i) => `P${i + 1}` }
 );
 const pad2 = (n) => String(n).padStart(2, "0");
 const nowStr = () => {
@@ -1451,7 +1513,7 @@ parent.appendChild(b);
 return b;
 };
 const tabs = {};
-for (const [k, label] of [["b50", "B50 图"], ["p50", "P50 图"], ["filter", "筛选图"], ["table", "表格"], ["history", "历史"]]) {
+for (const [k, label] of [["b50", "B50 图"], ["filter", "筛选图"], ["table", "表格"], ["history", "历史"]]) {
 tabs[k] = mkBtn(label, () => { tab = k; render(); });
 }
 mkBtn("关闭", () => panel.remove());
@@ -1649,7 +1711,7 @@ for (const [k, b] of Object.entries(tabs)) {
 b.style.background = k === tab ? "#d1127a" : "#fff";
 b.style.color = k === tab ? "#fff" : "#222";
 }
-filters.style.display = tab === "b50" || tab === "p50" || tab === "history" ? "none" : "flex";
+filters.style.display = tab === "b50" || tab === "history" ? "none" : "flex";
 const desc = filterRows();
 if (tab === "history") {
 renderHistory(seq);
@@ -1667,9 +1729,6 @@ let url, name;
 if (tab === "b50") {
 url = imageCache.b50 = imageCache.b50 || (await b50Image());
 name = `ongeki_b50_${stamp}.png`;
-} else if (tab === "p50") {
-url = imageCache.p50 = imageCache.p50 || (await p50Image());
-name = `ongeki_p50_${stamp}.png`;
 } else {
 const played = shownRows.filter((s) => s.played);
 const rows = shownRows.slice(0, IMG.MAX_CARDS);
