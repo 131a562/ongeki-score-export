@@ -77,7 +77,7 @@ diffKey: diff.key,
 genre,
 title,
 idx: el.querySelector("[name=idx]")?.value || "",
-jacketSrc: [...el.querySelectorAll("img")].map((i) => i.getAttribute("src") || "").find((src) => src && !/music_icon_|icon|star/i.test(src)) || "",
+jacketSrc: [...el.querySelectorAll("img")].map((i) => i.getAttribute("src") || "").find((src) => /\/img\/music\//.test(src)) || "",
 level: el.querySelector(".score_level")?.textContent.trim() || "",
 played,
 technical_score: ts,
@@ -140,10 +140,6 @@ const entry = c.length > 1
 ? { title: s.title, diff: s.diffKey, level: s.level, genre: s.genre, idx: s.idx, jacket: s.jacketSrc,
 candidates: c.map((m) => `id ${m.id} / ${m.genre} / Lv${m.level} / ${m.const} / ${m.artist} / img ${m.img}`) }
 : null;
-if (c.length > 1 && /^\d+$/.test(s.idx || "")) {
-const byId = c.filter((m) => String(m.id) === s.idx);
-if (byId.length === 1) { c = byId; entry.by = "id"; }
-}
 if (c.length > 1 && s.jacketSrc) {
 const byImg = c.filter((m) => m.img && s.jacketSrc.includes(m.img));
 if (byImg.length === 1) { c = byImg; entry.by = "jacket"; }
@@ -729,9 +725,15 @@ if (!k2.endsWith("|?") && !used.has(k2)) { used.add(k2); e[0] = k2; }
 return h;
 }
 let playlogSample = ""; // 调试用：プレイ履歴第一条的原始 HTML
+let playlogDigest = null; // 调试用：プレイ履歴前两条的图片地址和带数字的文字
 function parsePlaylog(doc) {
 const items = [...doc.querySelectorAll(".container3 > .m_10")];
 if (items.length) playlogSample = items[0].outerHTML.replace(/\s+/g, " ").slice(0, 3000);
+playlogDigest = items.slice(0, 2).map((el) => ({
+imgs: [...el.querySelectorAll("img")].map((i) => (i.getAttribute("src") || "").replace("https://ongeki-net.com/ongeki-mobile/", "")),
+nums: [...el.querySelectorAll("*")].filter((x) => !x.children.length && /\d/.test(x.textContent))
+.map((x) => `${x.className}: ${x.textContent.trim()}`).slice(0, 20),
+}));
 return items.map((el) => {
 const t = normTime(el.querySelector("span.f_r.h_10")?.textContent);
 const n = (el.querySelector(".m_5.l_h_10.break")?.textContent || "").replace(/[\n\t]/g, "").trim();
@@ -1677,6 +1679,7 @@ mkBtn("汇总 CSV", () => download(`ongeki_summary_${stamp}.csv`, toCsv(summary)
 mkBtn("JSON", () => download(`ongeki_scores_${stamp}.json`, JSON.stringify({ exported_at: new Date().toISOString(), rating: ratingInfo, official, summary, songs: all }, null, 1), "application/json"), moreBtns);
 mkBtn("调试信息", async () => {
 const info = JSON.stringify({
+playlogDigest, // 放在最前面：粘贴被截断时也能看到
 ua: navigator.userAgent,
 charts: DIFFS.map((d) => `${d.name}:${charts.filter((s) => s.difficulty === d.name).length}`).join(" "),
 rating: ratingInfo,
