@@ -770,7 +770,10 @@ return { state, pb, updates };
 function mergeHist(a, b) {
 const out = emptyHist();
 out.name = b.name || a.name;
-out.since = [a.since || "", b.since || ""].sort().pop();
+out.resetAt = [a.resetAt || "", b.resetAt || ""].sort().pop();
+const sinces = [a.since, b.since].filter(Boolean).sort();
+out.since = sinces[0] || "";
+if (out.resetAt && out.resetAt > out.since) out.since = out.resetAt;
 const seen = new Set();
 [...a.obs, ...b.obs].forEach((o) => {
 const id = obsId(o);
@@ -1009,6 +1012,7 @@ if (!plays.length) playNote = "（プレイ履歴未能解析，只用成绩扫�
 playNote = "（プレイ履歴读取失败）";
 }
 const local = reset ? emptyHist() : loadLocalHist();
+if (reset) local.resetAt = nowStr(); // 重开的时间：合并时起点以它为准（见 mergeHist）
 if (!local.since) log("历史记录从这次开始：保存当前全部已游玩谱面的成绩作为起点（之前的游玩不记）");
 const lastQuery = [...local.snaps.map((x) => x.t), ...local.obs.filter((o) => o.src === "b").map((o) => o.t)].sort().pop() || "";
 plays = lastQuery ? plays.filter((o) => o.t >= lastQuery) : [];
