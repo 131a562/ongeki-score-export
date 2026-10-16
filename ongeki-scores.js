@@ -77,6 +77,7 @@ diffKey: diff.key,
 genre,
 title,
 idx: el.querySelector("[name=idx]")?.value || "",
+jacketSrc: [...el.querySelectorAll("img")].map((i) => i.getAttribute("src") || "").find((src) => src && !/music_icon_|icon|star/i.test(src)) || "",
 level: el.querySelector(".score_level")?.textContent.trim() || "",
 played,
 technical_score: ts,
@@ -136,8 +137,17 @@ const byLevel = c.filter((m) => Math.floor(m.level) === lv && (m.level % 1 >= 0.
 if (byLevel.length) c = byLevel;
 }
 const entry = c.length > 1
-? { title: s.title, diff: s.diffKey, level: s.level, genre: s.genre, idx: s.idx, candidates: c.map((m) => `${m.genre} / Lv${m.level} / ${m.const} / ${m.artist}`) }
+? { title: s.title, diff: s.diffKey, level: s.level, genre: s.genre, idx: s.idx, jacket: s.jacketSrc,
+candidates: c.map((m) => `id ${m.id} / ${m.genre} / Lv${m.level} / ${m.const} / ${m.artist} / img ${m.img}`) }
 : null;
+if (c.length > 1 && /^\d+$/.test(s.idx || "")) {
+const byId = c.filter((m) => String(m.id) === s.idx);
+if (byId.length === 1) { c = byId; entry.by = "id"; }
+}
+if (c.length > 1 && s.jacketSrc) {
+const byImg = c.filter((m) => m.img && s.jacketSrc.includes(m.img));
+if (byImg.length === 1) { c = byImg; entry.by = "jacket"; }
+}
 if (c.length > 1 && s.idx) {
 try {
 const html = await (await fetch(`${NET}/record/musicDetail/?idx=${encodeURIComponent(s.idx)}`, { credentials: "include" })).text();
@@ -148,6 +158,7 @@ let byArtist = c.filter((m) => artist && norm(m.artist) === artist);
 if (!byArtist.length) byArtist = c.filter((m) => artist && (norm(m.artist).includes(artist) || artist.includes(norm(m.artist))));
 if (byArtist.length) c = byArtist;
 entry.artist = artist;
+if (c.length === 1) entry.by = "artist";
 if (!artistEl) entry.detailHtml = (doc.querySelector(".container3") || doc.body)?.innerHTML.replace(/\s+/g, " ").slice(0, 1500);
 await sleep(500);
 } catch (e) {
@@ -246,6 +257,7 @@ s.const = m && m.const > 0 ? m.const : null;
 s.const_unknown = !m ? "无数据" : m.ambiguous ? "同名未区分" : m.is_unknown ? "未确定" : "";
 s.version = m?.version || "";
 s.img = m?.img || "";
+s.artist = m?.artist || ""; // 同名曲在历史记录里用艺术家区分
 s.is_new = !!m && !!latestVersion && m.version === latestVersion;
 s.is_bonus = !!m?.is_bonus;
 s.rating = s.played && s.const ? tsRating(s.const, s) : 0;
@@ -253,6 +265,7 @@ s.ps_rating = s.const ? psRating(s.const, s.platinum_star) : 0;
 s.frame = "";
 delete s.diffKey;
 delete s.idx;
+delete s.jacketSrc;
 }
 const hiddenDiffs = new Set(DIFFS.filter((d) => d.hidden).map((d) => d.name));
 const all = charts.filter((s) => !hiddenDiffs.has(s.difficulty)); // 筛选图 / 表格 / 汇总只显示 EXP/MAS/LUN
@@ -682,7 +695,17 @@ return h;
 }
 const LAMP_RANK = { "": 0, FC: 1, AB: 2, "AB+": 3 };
 const lampOf = (s) => (s.lamp === "AB+" || s.lamp === "AB" || s.lamp === "FC" ? s.lamp : "");
-const chartByKey = new Map(all.map((s) => [chartKey(s.title, s.difficulty), s]));
+const sameTitleCount = new Map();
+for (const s of all) sameTitleCount.set(chartKey(s.title, s.difficulty), (sameTitleCount.get(chartKey(s.title, s.difficulty)) || 0) + 1);
+const isSameTitle = (title, diff) => (sameTitleCount.get(chartKey(title, diff)) || 0) > 1;
+const histKeyOf = (s) => (isSameTitle(s.title, s.difficulty)
+? `${chartKey(s.title, s.difficulty)}|${norm(s.artist || s.genre || "")}` : chartKey(s.title, s.difficulty));
+const chartByKey = new Map(all.map((s) => [histKeyOf(s), s]));
+const nameOfKey = (k, n) => {
+const extra = String(k).split("|")[2];
+if (extra == null) return n;
+return `${n}（${extra === "?" ? "版本未知" : chartByKey.get(k)?.artist || extra}）`;
+};
 let playlogSample = ""; // 调试用：プレイ履歴第一条的原始 HTML
 function parsePlaylog(doc) {
 const items = [...doc.querySelectorAll(".container3 > .m_10")];
@@ -701,7 +724,13 @@ if (v > 0 && v <= 1010000) { s = v; break; }
 if (!t || !n || !dm || !s) return null;
 const d = dm[1].toUpperCase();
 if (!DIFFS.some((x) => x.name === d)) return null; // 只记 EXP/MAS/LUN
-const o = { t, k: chartKey(n, d), n, d, s, src: "p" };
+let k = chartKey(n, d);
+if (isSameTitle(n, d)) {
+const srcs = [...el.querySelectorAll("img")].map((i) => i.getAttribute("src") || "").join(" ");
+const hit = all.filter((c) => chartKey(c.title, c.difficulty) === k && c.img && srcs.includes(c.img));
+k = hit.length === 1 ? histKeyOf(hit[0]) : k + "|?";
+}
+const o = { t, k, n, d, s, src: "p" };
 const icon = (name) => !!el.querySelector(`img[src*='music_icon_${name}.png']`);
 if (icon("fc") || icon("ab") || icon("abplus")) {
 const ab = icon("ab") || icon("abplus");
@@ -807,7 +836,7 @@ plays.forEach((o) => { if (!ids.has(obsId(o))) { ids.add(obsId(o)); hist.obs.pus
 const { state } = derive(hist);
 for (const s of all) {
 if (!s.played) continue;
-const k = chartKey(s.title, s.difficulty);
+const k = histKeyOf(s);
 const o = { t, k, n: s.title, d: s.difficulty, s: s.technical_score, l: lampOf(s), fb: s.full_bell ? 1 : 0,
 ps: s.platinum_score || 0, pm: s.platinum_max || 0, st: s.platinum_star || 0, src: "b" };
 const old = state[k];
@@ -816,7 +845,7 @@ const { ch } = absorb(old, o);
 if (ch.length || !old.has.l || !old.has.fb || !old.has.ps) hist.obs.push(o);
 }
 hist.obs.sort(byTime);
-const row = (s) => [chartKey(s.title, s.difficulty), s.title, s.technical_score, Math.round(s.rating * 1000), lampOf(s), s.full_bell ? 1 : 0];
+const row = (s) => [histKeyOf(s), s.title, s.technical_score, Math.round(s.rating * 1000), lampOf(s), s.full_bell ? 1 : 0];
 const snap = {
 t,
 r: official ? official.rating : ratingInfo.total,
@@ -827,7 +856,7 @@ p: ratingInfo.part.ps50,
 parts: [ratingInfo.part.new10, ratingInfo.part.best50, ratingInfo.part.ps50].map((x) => Math.round(x * 1000)),
 best: best50.map(row),
 news: new10.map(row),
-ps: ps50.map((s) => [chartKey(s.title, s.difficulty), s.title, s.platinum_star, psUnits(s.const, s.platinum_star)]),
+ps: ps50.map((s) => [histKeyOf(s), s.title, s.platinum_star, psUnits(s.const, s.platinum_star)]),
 };
 const last = hist.snaps[hist.snaps.length - 1];
 if (!(sameSnap(last, snap) && last.t.slice(0, 10) === t.slice(0, 10))) hist.snaps.push(snap);
@@ -1302,7 +1331,7 @@ ctx.font = f(700, 15);
 const rw = ctx.measureText(r.right).width;
 ctx.fillStyle = C.fg;
 ctx.font = f(500, 16);
-ctx.fillText(fit(ctx, r.e[1], colW - bw - rw - 24), x + bw + 8, yy);
+ctx.fillText(fit(ctx, nameOfKey(r.e[0], r.e[1]), colW - bw - rw - 24), x + bw + 8, yy);
 ctx.textAlign = "right";
 ctx.fillStyle = r.color;
 ctx.font = f(700, 15);
@@ -1352,7 +1381,7 @@ ctx.font = f(800, 15);
 const ww = Math.min(ctx.measureText(what).width, 520);
 ctx.fillStyle = C.fg;
 ctx.font = f(500, 16);
-ctx.fillText(fit(ctx, u.n, HW - HP * 2 - 150 - bw - ww - 30), HP + 150 + bw + 8, y);
+ctx.fillText(fit(ctx, nameOfKey(u.k, u.n), HW - HP * 2 - 150 - bw - ww - 30), HP + 150 + bw + 8, y);
 ctx.textAlign = "right";
 ctx.fillStyle = C["SSS+"];
 ctx.font = f(800, 15);
@@ -1402,7 +1431,7 @@ ctx.font = f(800, 16);
 ctx.fillText("O.N.G.E.K.I.  SCORE HISTORY  ·  " + (playerName || hist.name || ""), tx, 46);
 ctx.fillStyle = C.fg;
 ctx.font = f(800, 36);
-ctx.fillText(fit(ctx, e.n, HW - tx - 300), tx, 92);
+ctx.fillText(fit(ctx, nameOfKey(e.k, e.n), HW - tx - 300), tx, 92);
 let px = tx + (chart ? constPill(ctx, chart, tx, 128, C[chart.difficulty] || C.muted, 14) : diffBadge(ctx, e.d, tx, 128)) + 8;
 if (cur) {
 if (cur.l) px += pill(ctx, cur.l, px, 128, C[cur.l] || C.muted, 13) + 6;
@@ -1744,7 +1773,7 @@ const b = document.createElement("button");
 b.style.cssText = "display:flex;width:100%;align-items:center;gap:6px;text-align:left;margin:3px 0;padding:7px 8px;" +
 "border:1px solid #ddd;border-radius:8px;background:#fafafa;color:#222;font-size:14px";
 b.innerHTML = `<span style="background:${C[e.d] || "#999"};color:#16151c;border-radius:4px;padding:0 5px;font-size:12px;font-weight:bold">${DIFF_SHORT[e.d] || e.d}</span>` +
-`<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.n)}</span>` +
+`<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(nameOfKey(e.k, e.n))}</span>` +
 `<span style="color:#777;font-size:12px">${(pb[e.k] || 0).toLocaleString("en-US")} · ${e.plays} 次</span>`;
 b.onclick = async () => {
 curveBox.style.display = "";
