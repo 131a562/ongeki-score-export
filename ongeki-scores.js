@@ -744,15 +744,23 @@ next.has.ps = true;
 return { next, ch };
 }
 const isRatingChange = (c) => c.type !== "ps";
+const firstChanges = (st) => [
+{ type: "ts", from: null, to: st.s },
+...(st.l ? [{ type: "lamp", from: null, to: st.l }] : []),
+...(st.fb ? [{ type: "fb", from: null }] : []),
+...(st.st ? [{ type: "star", from: null, to: st.st }] : []),
+];
 function derive(hist) {
-const state = {}, pb = {}, scanned = new Set(), updates = [];
+const state = {}, pb = {}, scanned = new Set(), fresh = new Set(), updates = [];
+const base = hist.since || "";
 hist.obs.slice().sort(byTime).forEach((o) => {
 const before = state[o.k];
-const known = scanned.has(o.k);
+if (!before && base && o.t > base) fresh.add(o.k);
+const known = scanned.has(o.k) || fresh.has(o.k);
 if (o.src === "b") scanned.add(o.k);
 if (!before) {
 state[o.k] = absorb(blankState(), o).next;
-if (o.src === "p" && o.nr) updates.push({ ...o, before: null, after: state[o.k], changes: [{ type: "ts", from: null, to: o.s }] });
+if (fresh.has(o.k) || (o.src === "p" && o.nr)) updates.push({ ...o, before: null, after: state[o.k], changes: firstChanges(state[o.k]) });
 } else {
 const { next, ch } = absorb(before, o);
 state[o.k] = next;
@@ -899,9 +907,9 @@ function changeText(u) {
 const parts = [];
 for (const c of u.changes) {
 if (c.type === "ts") parts.push(c.from != null ? `${c.from.toLocaleString("en-US")} → ${c.to.toLocaleString("en-US")}（+${(c.to - c.from).toLocaleString("en-US")}）` : `${c.to.toLocaleString("en-US")}（首次）`);
-else if (c.type === "lamp") parts.push(`${c.from || "CLEAR"}→${c.to}`);
-else if (c.type === "fb") parts.push("+FB");
-else if (c.type === "star") parts.push(`☆${c.from}→☆${c.to}`);
+else if (c.type === "lamp") parts.push(c.from === null ? c.to : `${c.from || "CLEAR"}→${c.to}`);
+else if (c.type === "fb") parts.push(c.from === null ? "FB" : "+FB");
+else if (c.type === "star") parts.push(c.from === null ? `☆${c.to}` : `☆${c.from}→☆${c.to}`);
 else if (c.type === "ps") parts.push(`PS +${(c.to - c.from).toLocaleString("en-US")}`);
 }
 return parts.join(" · ");
