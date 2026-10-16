@@ -706,6 +706,28 @@ const extra = String(k).split("|")[2];
 if (extra == null) return n;
 return `${n}（${extra === "?" ? "版本未知" : chartByKey.get(k)?.artist || extra}）`;
 };
+const canonKey = (k, same) => {
+const [, diff, extra] = String(k).split("|");
+if (extra != null || !diff) return k;
+const versions = all.filter((c) => chartKey(c.title, c.difficulty) === k);
+if (versions.length < 2) return k;
+const played = versions.filter((c) => c.played || c.platinum_star > 0);
+if (played.length === 1) return histKeyOf(played[0]);
+const hit = same ? played.filter(same) : [];
+return hit.length === 1 ? histKeyOf(hit[0]) : k + "|?";
+};
+function normalizeKeys(h) {
+h.obs.forEach((o) => { o.k = canonKey(o.k, (c) => c.technical_score === o.s); });
+h.snaps.forEach((s) => ["best", "news"].forEach((f) => (s[f] || []).forEach((e) => { e[0] = canonKey(e[0], (c) => c.technical_score === e[2]); })));
+h.snaps.forEach((s) => {
+const used = new Set();
+(s.ps || []).forEach((e) => {
+const k2 = canonKey(e[0], (c) => c.platinum_star === e[2]);
+if (!k2.endsWith("|?") && !used.has(k2)) { used.add(k2); e[0] = k2; }
+});
+});
+return h;
+}
 let playlogSample = ""; // 调试用：プレイ履歴第一条的原始 HTML
 function parsePlaylog(doc) {
 const items = [...doc.querySelectorAll(".container3 > .m_10")];
@@ -1005,7 +1027,7 @@ return true;
 const syncMerge = async (acc, local) => {
 for (let attempt = 0; attempt < 3; attempt++) {
 const { data, sha } = await syncGet(acc);
-const merged = data && data.obs ? mergeHist(migrateHist(data), local) : local;
+const merged = data && data.obs ? mergeHist(normalizeKeys(migrateHist(data)), local) : local;
 if (data && JSON.stringify(data) === JSON.stringify(merged)) return merged;
 if (await syncPut(acc, merged, sha)) return merged;
 }
@@ -1040,7 +1062,7 @@ if (!plays.length) playNote = "（プレイ履歴未能解析，只用成绩扫�
 } catch (e) {
 playNote = "（プレイ履歴读取失败）";
 }
-const local = reset ? emptyHist() : loadLocalHist();
+const local = reset ? emptyHist() : normalizeKeys(loadLocalHist());
 if (reset) local.resetAt = nowStr(); // 重开的时间：合并时起点以它为准（见 mergeHist）
 if (!local.since) log("历史记录从这次开始：保存当前全部已游玩谱面的成绩作为起点（之前的游玩不记）");
 const lastQuery = [...local.snaps.map((x) => x.t), ...local.obs.filter((o) => o.src === "b").map((o) => o.t)].sort().pop() || "";
@@ -1324,7 +1346,7 @@ ctx.textAlign = "left";
 y += 86;
 const colW = (HW - HP * 2 - 24) / 2;
 const rowText = (x, yy, r) => {
-const d = r.e[0].split("|").pop();
+const d = r.e[0].split("|")[1]; // 键 = 曲名|难度[|艺术家]
 let bw = diffBadge(ctx, d, x, yy);
 if (r.p) bw += 4 + pill(ctx, "P", x + bw + 4, yy, C.plat, 13);
 ctx.font = f(700, 15);
