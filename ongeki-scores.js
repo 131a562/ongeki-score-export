@@ -800,22 +800,46 @@ const firstChanges = (st) => [
 ];
 function derive(hist) {
 const state = {}, pb = {}, scanned = new Set(), fresh = new Set(), updates = [];
+const lastScanT = {}, lastPlay = {}; // 每首歌：上一次成绩扫描的时间、上一次扫描之后最近的游玩 {o, u}
 const base = hist.since || "";
+const mergeInto = (u, ch, next) => {
+u.after = next;
+for (const c of ch) {
+const i = u.changes.findIndex((x) => x.type === c.type);
+if (i >= 0) u.changes[i] = { ...c, from: u.changes[i].from };
+else u.changes.push(c);
+}
+};
 hist.obs.slice().sort(byTime).forEach((o) => {
 const before = state[o.k];
 if (!before && base && o.t > base) fresh.add(o.k);
 const known = scanned.has(o.k) || fresh.has(o.k);
-if (o.src === "b") scanned.add(o.k);
 if (!before) {
 state[o.k] = absorb(blankState(), o).next;
-if (fresh.has(o.k) || (o.src === "p" && o.nr)) updates.push({ ...o, before: null, after: state[o.k], changes: firstChanges(state[o.k]) });
+let u = null;
+if (fresh.has(o.k) || (o.src === "p" && o.nr)) updates.push((u = { ...o, before: null, after: state[o.k], changes: firstChanges(state[o.k]) }));
+if (o.src === "p") lastPlay[o.k] = { o, u };
 } else {
 const { next, ch } = absorb(before, o);
 state[o.k] = next;
-if (ch.some(isRatingChange) && (known || (o.src === "p" && o.nr))) updates.push({ ...o, before, after: next, changes: ch });
+const play = lastPlay[o.k];
+const fromPlay = o.src === "b" && !ch.some((c) => c.type === "ts") && play && play.o.t > (lastScanT[o.k] || "");
+if (ch.some(isRatingChange) && (known || fromPlay || (o.src === "p" && o.nr))) {
+if (fromPlay && play.u) mergeInto(play.u, ch, next);
+else {
+const u = fromPlay
+? { ...o, t: play.o.t, src: "p", s: play.o.s, nr: play.o.nr, before, after: next, changes: ch }
+: { ...o, before, after: next, changes: ch };
+updates.push(u);
+if (fromPlay) play.u = u;
+if (o.src === "p") lastPlay[o.k] = { o, u };
 }
+} else if (o.src === "p") lastPlay[o.k] = { o, u: null };
+}
+if (o.src === "b") { scanned.add(o.k); lastScanT[o.k] = o.t; }
 pb[o.k] = state[o.k].s;
 });
+updates.sort(byTime);
 return { state, pb, updates };
 }
 function mergeHist(a, b) {
