@@ -745,6 +745,13 @@ for (const x of el.querySelectorAll("[class*=technical]")) {
 const v = num((x.textContent.match(/\d{1,3}(,\d{3})+|\d{6,7}/) || [""])[0]);
 if (v > 0 && v <= 1010000) { s = v; break; }
 }
+if (!s) {
+for (const x of el.querySelectorAll(".f_20")) {
+const tx = x.textContent.trim();
+const v = num(tx);
+if (!/%|％/.test(tx) && v > 0 && v <= 1010000) s = v;
+}
+}
 if (!t || !n || !dm || !s) return null;
 const d = dm[1].toUpperCase();
 if (!DIFFS.some((x) => x.name === d)) return null; // 只记 EXP/MAS/LUN
@@ -755,12 +762,16 @@ const hit = all.filter((c) => chartKey(c.title, c.difficulty) === k && c.img && 
 k = hit.length === 1 ? histKeyOf(hit[0]) : k + "|?";
 }
 const o = { t, k, n, d, s, src: "p" };
-const icon = (name) => !!el.querySelector(`img[src*='music_icon_${name}.png']`);
-if (icon("fc") || icon("ab") || icon("abplus")) {
-const ab = icon("ab") || icon("abplus");
-o.l = s >= 1010000 && ab ? "AB+" : ab ? "AB" : "FC";
-o.fb = icon("fb") ? 1 : 0;
+const imgs = [...el.querySelectorAll("img")].map((i) => i.getAttribute("src") || "");
+const got = (name) => imgs.some((src) => new RegExp(`score_detail_${name}\\.png`).test(src));
+const seen = (name) => imgs.some((src) => new RegExp(`score_detail_${name}(_base)?\\.png`).test(src));
+if (seen("fc") || seen("ab") || seen("abplus")) {
+const ab = got("ab") || got("abplus");
+o.l = s >= 1010000 && ab ? "AB+" : ab ? "AB" : got("fc") ? "FC" : "";
 }
+if (seen("fb")) o.fb = got("fb") ? 1 : 0;
+const jm = imgs.join(" ").match(/img\/music\/([0-9a-f]+)\.png/);
+if (jm) Object.defineProperty(o, "j", { value: jm[1], enumerable: false });
 if (/new_?record/i.test(el.innerHTML)) o.nr = 1;
 return o;
 }).filter(Boolean);
@@ -1092,6 +1103,14 @@ const local = reset ? emptyHist() : normalizeKeys(loadLocalHist());
 if (reset) local.resetAt = nowStr(); // 重开的时间：合并时起点以它为准（见 mergeHist）
 if (!local.since) log("历史记录从这次开始：保存当前全部已游玩谱面的成绩作为起点（之前的游玩不记）");
 const lastQuery = [...local.snaps.map((x) => x.t), ...local.obs.filter((o) => o.src === "b").map((o) => o.t)].sort().pop() || "";
+const fresh = new Map(plays.map((o) => [playId(o), o]));
+for (const o of local.obs) {
+const p = o.src === "p" && fresh.get(playId(o));
+if (!p) continue;
+if (o.l == null && p.l != null) o.l = p.l;
+if (o.fb == null && p.fb != null) o.fb = p.fb;
+if (String(o.k).endsWith("|?") && !String(p.k).endsWith("|?")) o.k = p.k;
+}
 plays = lastQuery ? plays.filter((o) => o.t >= lastQuery) : [];
 hist = applyUpdate(local, plays);
 syncNote = (saveLocalHist(hist) ? "历史记录已保存在本机" : "本机存储空间不足，历史记录未保存") + playNote;
