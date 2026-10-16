@@ -671,9 +671,18 @@ return new Date(+m[1], m[2] - 1, +m[3], +m[4], +m[5]).getTime();
 };
 const byTime = (a, b) => (a.t < b.t ? -1 : a.t > b.t ? 1 : 0);
 const chartKey = (title, diff) => norm(title) + "|" + diff;
-const emptyHist = () => ({ v: 2, game: "ongeki", name: "", obs: [], snaps: [] });
-const obsId = (o) => [o.t, o.k, o.s, o.src].join("|") +
-(o.l != null ? "|l" + o.l : "") + (o.fb != null ? "|fb" + o.fb : "") + (o.ps != null ? "|ps" + o.ps + "/" + o.st : "");
+const HIST_V = 3;
+const emptyHist = () => ({ v: HIST_V, game: "ongeki", name: "", since: "", obs: [], snaps: [] });
+const playId = (o) => `${o.t}|${norm(o.n)}|${o.d}|${o.s}`;
+const obsId = (o) => (o.src === "p" ? "p|" + playId(o) : [o.t, o.k, o.s, o.src].join("|") +
+(o.l != null ? "|l" + o.l : "") + (o.fb != null ? "|fb" + o.fb : "") + (o.ps != null ? "|ps" + o.ps + "/" + o.st : ""));
+function migrateHist(h) {
+if (!h || !h.obs) return emptyHist();
+if (h.v === HIST_V) return h;
+const firstScan = h.obs.filter((o) => o.src === "b").map((o) => o.t).sort()[0] || "";
+const since = firstScan || [...h.snaps.map((s) => s.t)].sort()[0] || "";
+return { ...h, v: HIST_V, since, obs: h.obs.filter((o) => o.t >= since), snaps: h.snaps.filter((s) => s.t >= since) };
+}
 const LAMP_RANK = { "": 0, FC: 1, AB: 2, "AB+": 3 };
 const lampOf = (s) => (s.lamp === "AB+" || s.lamp === "AB" || s.lamp === "FC" ? s.lamp : "");
 const chartByKey = new Map(all.map((s) => [chartKey(s.title, s.difficulty), s]));
@@ -736,16 +745,18 @@ return { next, ch };
 }
 const isRatingChange = (c) => c.type !== "ps";
 function derive(hist) {
-const state = {}, pb = {}, updates = [];
+const state = {}, pb = {}, scanned = new Set(), updates = [];
 hist.obs.slice().sort(byTime).forEach((o) => {
 const before = state[o.k];
+const known = scanned.has(o.k);
+if (o.src === "b") scanned.add(o.k);
 if (!before) {
 state[o.k] = absorb(blankState(), o).next;
 if (o.src === "p" && o.nr) updates.push({ ...o, before: null, after: state[o.k], changes: [{ type: "ts", from: null, to: o.s }] });
 } else {
 const { next, ch } = absorb(before, o);
 state[o.k] = next;
-if (ch.some(isRatingChange)) updates.push({ ...o, before, after: next, changes: ch });
+if (ch.some(isRatingChange) && (known || (o.src === "p" && o.nr))) updates.push({ ...o, before, after: next, changes: ch });
 }
 pb[o.k] = state[o.k].s;
 });
@@ -754,15 +765,16 @@ return { state, pb, updates };
 function mergeHist(a, b) {
 const out = emptyHist();
 out.name = b.name || a.name;
+out.since = [a.since || "", b.since || ""].sort().pop();
 const seen = new Set();
 [...a.obs, ...b.obs].forEach((o) => {
 const id = obsId(o);
 if (!seen.has(id)) { seen.add(id); out.obs.push(o); }
 });
-out.obs.sort(byTime);
+out.obs = out.obs.filter((o) => o.t >= out.since).sort(byTime);
 const snaps = new Map();
 [...a.snaps, ...b.snaps].forEach((s) => snaps.set(s.t, s));
-out.snaps = [...snaps.values()].sort(byTime);
+out.snaps = [...snaps.values()].filter((s) => s.t >= out.since).sort(byTime);
 return out;
 }
 const tsMilliOf = (k, st) => {
@@ -780,7 +792,8 @@ JSON.stringify([a.best, a.news, a.ps]) === JSON.stringify([b.best, b.news, b.ps]
 function applyUpdate(hist, plays) {
 const t = nowStr();
 if (playerName) hist.name = playerName;
-hist.v = 2;
+hist.v = HIST_V;
+if (!hist.since) hist.since = t; // 起点：这次的成绩扫描和快照就是历史的开始
 const ids = new Set(hist.obs.map(obsId));
 plays.forEach((o) => { if (!ids.has(obsId(o))) { ids.add(obsId(o)); hist.obs.push(o); } });
 const { state } = derive(hist);
@@ -842,7 +855,7 @@ return { entered: !was && m.has(k), inFrame: m.has(k) };
 };
 let si = -1, st = null;
 updates.slice().sort(byTime).forEach((u) => {
-while (si + 1 < snaps.length && snaps[si + 1].t < u.t) { si++; st = fromSnap(snaps[si]); }
+while (si + 1 < snaps.length && snaps[si + 1].t < u.t) { si++; st = snaps[si].best?.length || snaps[si].news?.length ? fromSnap(snaps[si]) : null; }
 const c = chartByKey.get(u.k);
 if (!st) { out.set(u, { noSnap: true }); return; }
 if (!c || !c.const) { out.set(u, { noConst: true }); return; }
@@ -878,9 +891,9 @@ if (im.inFrame != null) bits.push(im.entered ? "进入 " + im.frame : im.inFrame
 if (im.pIn != null) bits.push(im.pEntered ? "进入 P-SCORE50" : im.pIn ? "P-SCORE50 内提升" : "未进入 P-SCORE50");
 if (im.pUnknown) bits.push("P-SCORE 影响未知（旧快照）");
 const head = bits.join(" · ");
-if (im.delta > 0) return [head + " · 账号 Rating +" + (im.delta / 1000).toFixed(3), GOOD];
-if (im.exact > 0) return [head + " · 账号 Rating 不变（+" + im.exact.toFixed(5) + "，未进位）", C.muted];
-return [head + " · 账号 Rating 不变", C.muted];
+if (im.delta > 0) return [head + " · 账号 Rating +" + (im.delta / 1000).toFixed(3) + "（推算）", GOOD];
+if (im.exact > 0) return [head + " · 账号 Rating 不变（+" + im.exact.toFixed(5) + "，未进位，推算）", C.muted];
+return [head + " · 账号 Rating 不变（推算）", C.muted];
 }
 function changeText(u) {
 const parts = [];
@@ -896,8 +909,7 @@ return parts.join(" · ");
 const histKey = () => "ongeki-hist:" + (playerName || "_");
 const loadLocalHist = () => {
 try {
-const h = JSON.parse(localStorage.getItem(histKey()) || "null");
-return h && h.obs ? h : emptyHist();
+return migrateHist(JSON.parse(localStorage.getItem(histKey()) || "null"));
 } catch (e) {
 return emptyHist();
 }
@@ -956,7 +968,7 @@ return true;
 const syncMerge = async (acc, local) => {
 for (let attempt = 0; attempt < 3; attempt++) {
 const { data, sha } = await syncGet(acc);
-const merged = data && data.obs ? mergeHist(data, local) : local;
+const merged = data && data.obs ? mergeHist(migrateHist(data), local) : local;
 if (data && JSON.stringify(data) === JSON.stringify(merged)) return merged;
 if (await syncPut(acc, merged, sha)) return merged;
 }
@@ -981,7 +993,7 @@ return acc;
 };
 let syncNote = "";
 let hist = emptyHist();
-async function recordAndSync(forceAsk) {
+async function recordAndSync(forceAsk, reset) {
 let plays = [];
 let playNote = "";
 try {
@@ -991,7 +1003,11 @@ if (!plays.length) playNote = "（プレイ履歴未能解析，只用成绩扫�
 } catch (e) {
 playNote = "（プレイ履歴读取失败）";
 }
-hist = applyUpdate(loadLocalHist(), plays);
+const local = reset ? emptyHist() : loadLocalHist();
+if (!local.since) log("历史记录从这次开始：保存当前全部已游玩谱面的成绩作为起点（之前的游玩不记）");
+const lastQuery = [...local.snaps.map((x) => x.t), ...local.obs.filter((o) => o.src === "b").map((o) => o.t)].sort().pop() || "";
+plays = lastQuery ? plays.filter((o) => o.t >= lastQuery) : [];
+hist = applyUpdate(local, plays);
 syncNote = (saveLocalHist(hist) ? "历史记录已保存在本机" : "本机存储空间不足，历史记录未保存") + playNote;
 if (!SYNC_URL) return;
 const accounts = loadAccounts();
@@ -1192,8 +1208,10 @@ if (why.length || dr > 0) ups.push({ e, dr, why });
 ups.sort((p, q) => (q.dr || 0) - (p.dr || 0));
 upMore = Math.max(0, ups.length - 10);
 ups.slice(0, 10).forEach(({ e, dr, why }) => rows.push({
-side: "L", e, color: C["SSS+"],
-right: (dr != null ? `${((e[3] - dr) / 1000).toFixed(3)} → ${(e[3] / 1000).toFixed(3)}（+${(dr / 1000).toFixed(3)}）` : e[2].toLocaleString("en-US")),
+side: "L", e, color: dr == null || dr > 0 ? C["SSS+"] : C.muted,
+right: dr == null ? e[2].toLocaleString("en-US")
+: dr > 0 ? `${((e[3] - dr) / 1000).toFixed(3)} → ${(e[3] / 1000).toFixed(3)}（+${(dr / 1000).toFixed(3)}）`
+: `${(e[3] / 1000).toFixed(3)}（rating 不变）`,
 sub: why.join(" · "),
 }));
 a.forEach((e, k) => {
@@ -1213,7 +1231,7 @@ const recent = updates.slice(-20).reverse();
 const ROW = 34, SUBROW = 20, PB_ROW = 58;
 const colRows = (side) => rows.filter((r) => r.side === side).reduce((a, r) => a + ROW + (r.sub ? SUBROW : 0), 0);
 const changeH = Math.max(colRows("L") + (upMore ? ROW : 0), colRows("R"), ROW);
-const H = 150 + 380 + 330 + 30 + 86 + changeH + 30 + 64 + Math.max(recent.length, 1) * PB_ROW + 50;
+const H = 150 + 380 + 30 + 86 + changeH + 30 + 64 + Math.max(recent.length, 1) * PB_ROW + 50;
 const { cv, ctx } = newCanvas(HW, H);
 ctx.fillStyle = C.accent;
 ctx.font = f(800, 16);
@@ -1221,34 +1239,35 @@ ctx.fillText("O.N.G.E.K.I.  RATING HISTORY", HP, 42);
 ctx.fillStyle = C.fg;
 ctx.font = f(800, 42);
 ctx.fillText(fit(ctx, playerName || hist.name || "", 520), HP, 96);
-const at = (ms) => [...snaps].reverse().find((s) => timeMs(s.t) <= ms) || snaps[0];
-if (last) {
-histStat(ctx, "RATING", last.r.toFixed(3), HW - HP, C["SSS+"], true);
-const d30 = at(Date.now() - 30 * 864e5);
-histStat(ctx, "30 天", d30 ? signed(last.r - d30.r) : "-", HW - HP - 230, C.plat);
-histStat(ctx, "累计", signed(last.r - snaps[0].r), HW - HP - 400, C.accent);
+const line = snaps.filter((s) => s.r).map((s) => [timeMs(s.t), s.r]).sort((a, b) => a[0] - b[0]);
+const days = new Map();
+for (const [ms, r] of line) {
+const d = new Date(ms);
+days.set(new Date(d.getFullYear(), d.getMonth(), d.getDate(), 12).getTime(), r);
+}
+const daily = [...days.entries()];
+if (line.length) {
+const now = line[line.length - 1][1];
+const base30 = [...line].reverse().find((pt) => pt[0] <= Date.now() - 30 * 864e5) || line[0];
+histStat(ctx, "RATING", now.toFixed(3), HW - HP, C["SSS+"], true);
+histStat(ctx, "30 天", signed(now - base30[1]), HW - HP - 230, C.plat);
+histStat(ctx, "累计", signed(now - line[0][1]), HW - HP - 400, C.accent);
 }
 ctx.fillStyle = C.muted;
 ctx.font = f(500, 14);
-ctx.fillText(`${snaps.length} 个快照${snaps[0] ? `（${snaps[0].t.slice(0, 10)} – ${last.t.slice(0, 10)}）` : ""}`, HP, 128);
+ctx.fillText(line.length ? `${daily.length} 天的记录（${new Date(line[0][0]).toLocaleDateString("ja-JP")} – ${new Date(line[line.length - 1][0]).toLocaleDateString("ja-JP")}）` : "", HP, 128);
 let y = 150;
-const pts = (fn) => snaps.filter((s) => fn(s) != null).map((s) => [timeMs(s.t), fn(s)]);
 lineChart(ctx, HP, y, HW - HP * 2, 360, [
-{ label: "RATING（游戏内）", color: C["SSS+"], pts: pts((s) => s.r), width: 4 },
+{ label: "RATING（游戏内，每天）", color: C["SSS+"], pts: daily, width: 4 },
 ], { minSpan: 0.05, fmt: (v) => v.toFixed(3) });
-if (snaps.length === 1) {
+if (daily.length === 1) {
 ctx.fillStyle = C.muted;
 ctx.font = f(500, 16);
 ctx.textAlign = "center";
-ctx.fillText("目前只有 1 个快照，多运行几次后就能看到曲线", HW / 2, y + 60);
+ctx.fillText("目前只有 1 天的记录，以后每天运行一次就能连成线", HW / 2, y + 60);
 ctx.textAlign = "left";
 }
 y += 380;
-lineChart(ctx, HP, y, HW - HP * 2, 300, [
-{ label: "BEST50 平均", color: C.accent, pts: pts((s) => s.b50), width: 3, dot: 3 },
-{ label: "NEW10 平均", color: C.plat, pts: pts((s) => s.n10), width: 3, dot: 3 },
-], { minSpan: 0.05, fmt: (v) => v.toFixed(3) });
-y += 330;
 histSection(ctx, "B50 / P-SCORE50 变化" + (prev ? `（对比 ${prev.t}）` : ""), y, C.accent);
 if (prev) {
 const dr = Math.round((last.r - prev.r) * 1000);
@@ -1390,9 +1409,22 @@ ctx.fillText([best > 0 ? rankOf(best) : "", rNow != null ? "单曲 Rating " + (r
 pNow ? "P-rate " + fmtPs(pNow / 1e5) : "", `记录到 ${plays.length} 次游玩`].filter(Boolean).join("　·　"), HW - HP, 128);
 ctx.textAlign = "left";
 let y = 170;
+const CHART_MIN = 940000;
+const shownPlays = plays.filter((o) => o.s >= CHART_MIN);
+const shownPb = pbPts.filter((pt) => pt[1] >= CHART_MIN);
+if (!shownPlays.length && !shownPb.length) {
+rrect(ctx, HP, y, HW - HP * 2, 400, 12);
+ctx.fillStyle = C.card;
+ctx.fill();
+ctx.fillStyle = C.muted;
+ctx.font = f(500, 16);
+ctx.textAlign = "center";
+ctx.fillText("还没有 AAA（940,000）以上的成绩，曲线图只画 AAA 以上的成绩", HW / 2, y + 200);
+ctx.textAlign = "left";
+}
 lineChart(ctx, HP, y, HW - HP * 2, 400, [
-{ label: "个人最佳", color: C["SSS+"], pts: pbPts, step: true, dots: false, width: 3 },
-{ label: "每次游玩", color: C.plat, pts: plays.map((o) => [timeMs(o.t), o.s]), line: false, dot: 5 },
+...(shownPlays.length >= 2 ? [{ label: "个人最佳", color: C["SSS+"], pts: shownPb, step: true, dots: false, width: 3 }] : []),
+{ label: "每次游玩（AAA 以上）", color: C.plat, pts: shownPlays.map((o) => [timeMs(o.t), o.s]), line: false, dot: 5 },
 ], {
 minSpan: 4000, maxV: 1010000, fmt: (v) => Math.round(v).toLocaleString("en-US"),
 refs: [{ v: 1007500, label: "SSS+" }, { v: 1000000, label: "SSS" }, { v: 990000, label: "SS" }, { v: 970000, label: "S" }],
@@ -1447,17 +1479,20 @@ ctx.fillText(o.s.toLocaleString("en-US"), HP + 200, y);
 ctx.fillStyle = C[rankOf(o.s)] || C.fg;
 ctx.font = f(800, 15);
 ctx.fillText(rankOf(o.s), HP + 330, y);
+let bx = HP + 390;
+for (const t of [o.l, o.fb ? "FB" : ""]) if (t) bx += pill(ctx, t, bx, y, C[t] || C.muted, 11) + 4;
 const before = pbAt.get(o);
 ctx.font = f(700, 15);
-if (before >= 0 && o.s > before) { ctx.fillStyle = GOOD; ctx.fillText("NEW RECORD  +" + (o.s - before).toLocaleString("en-US"), HP + 410, y); }
-else if (before < 0 && o.nr) { ctx.fillStyle = GOOD; ctx.fillText("NEW RECORD", HP + 410, y); }
-else if (before >= 0) { ctx.fillStyle = C.muted; ctx.font = f(500, 14); ctx.fillText("距最佳 −" + (before - o.s).toLocaleString("en-US"), HP + 410, y); }
+const nx = Math.max(bx + 8, HP + 480);
+if (before >= 0 && o.s > before) { ctx.fillStyle = GOOD; ctx.fillText("NEW RECORD  +" + (o.s - before).toLocaleString("en-US"), nx, y); }
+else if (before < 0 && o.nr) { ctx.fillStyle = GOOD; ctx.fillText("NEW RECORD", nx, y); }
+else if (before >= 0) { ctx.fillStyle = C.muted; ctx.font = f(500, 14); ctx.fillText("距最佳 −" + (before - o.s).toLocaleString("en-US"), nx, y); }
 const r = tsMilliOf(e.k, stAt.get(o));
 if (r != null) {
 ctx.textAlign = "right";
 ctx.fillStyle = C.muted;
 ctx.font = f(500, 14);
-ctx.fillText("这次的 Rating " + (r / 1000).toFixed(3), HW - HP, y);
+ctx.fillText("单曲 " + (r / 1000).toFixed(3), HW - HP, y);
 ctx.textAlign = "left";
 }
 y += ROW;
@@ -1643,18 +1678,25 @@ return d;
 };
 const { pb, updates } = derive(hist);
 const info = card();
-info.innerHTML = `<div>${esc(syncNote)}</div><div style="color:#555">${hist.snaps.length} 个 Rating 快照${hist.snaps[0] ? "（" + hist.snaps[0].t.slice(0, 10) + " 起）" : ""} · ` +
+info.innerHTML = `<div>${esc(syncNote)}</div><div style="color:#555">${hist.since ? "从 " + esc(hist.since) + " 开始记录 · " : ""}${hist.snaps.length} 个 Rating 快照 · ` +
 `${hist.obs.filter((o) => o.src === "p").length} 条游玩记录 · ${updates.length} 次推分</div>`;
-if (SYNC_URL) {
 const row = document.createElement("div");
-row.style.cssText = "margin-top:6px";
+row.style.cssText = "margin-top:6px;display:flex;flex-wrap:wrap;gap:6px";
+if (SYNC_URL) {
 mkBtn("更改同步名字", async () => {
 await recordAndSync(true);
 imageCache.trend = null;
 render();
 }, row);
-info.appendChild(row);
 }
+mkBtn("从现在重新开始记录", async () => {
+if (!confirm("清空这个账号的全部历史记录" + (SYNC_URL ? "（本机和云端）" : "") + "，把现在全部谱面的成绩当作新的起点，从现在开始重新记录？\n清空后无法恢复。")) return;
+await recordAndSync(false, true);
+imageCache.trend = null;
+render();
+}, row);
+info.appendChild(row);
+const pushed = new Set(updates.map((u) => u.k));
 const songs = new Map();
 hist.obs.forEach((o) => {
 const e = songs.get(o.k) || { k: o.k, n: o.n, d: o.d, plays: 0, last: "" };
@@ -1662,20 +1704,20 @@ if (o.src === "p") e.plays++;
 if (o.t > e.last) e.last = o.t;
 songs.set(o.k, e);
 });
+const trendBox = card("padding:0;background:none");
+trendBox.textContent = "正在生成走势图…";
 const search = card();
 search.innerHTML = '<b>单曲分数曲线</b><input id="oc-hq" placeholder="输入曲名搜索" autocomplete="off" ' +
 'style="display:block;width:100%;box-sizing:border-box;margin:6px 0;padding:6px 8px;font-size:16px"><div id="oc-hlist"></div>';
 const curveBox = card("display:none");
-const trendBox = card("padding:0;background:none");
-trendBox.textContent = "正在生成走势图…";
 const listEl = search.querySelector("#oc-hlist");
 const renderList = () => {
 const q = norm(search.querySelector("#oc-hq").value).toLowerCase();
 const items = [...songs.values()]
-.filter((e) => !q || norm(e.n).toLowerCase().includes(q))
+.filter((e) => (e.plays > 0 || pushed.has(e.k)) && (!q || norm(e.n).toLowerCase().includes(q)))
 .sort((a, b) => b.plays - a.plays || (a.last < b.last ? 1 : -1))
 .slice(0, 30);
-listEl.innerHTML = items.length ? "" : '<div style="color:#888">没有记录</div>';
+listEl.innerHTML = items.length ? "" : '<div style="color:#888">没有记录（プレイ履歴里出现过、或有推分记录的谱面才会列在这里）</div>';
 for (const e of items) {
 const b = document.createElement("button");
 b.style.cssText = "display:flex;width:100%;align-items:center;gap:6px;text-align:left;margin:3px 0;padding:7px 8px;" +
