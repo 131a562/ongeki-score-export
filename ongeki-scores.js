@@ -1450,6 +1450,7 @@ else if (en.start && !en.end) rows.push({ side: "R", e, p, color: "#ff8a8a", rig
 else if (en.start && en.end) ups.push({ e, p, en, sub, val, dr: en.after - (en.before == null ? en.after : en.before) });
 });
 const w = (x) => (x.p ? x.dr : x.dr * 100);
+if (onlyRated) ups.splice(0, ups.length, ...ups.filter((x) => x.en.before == null || x.dr > 0));
 ups.sort((a, b) => w(b) - w(a));
 upMore = Math.max(0, ups.length - 10);
 ups.slice(0, 10).forEach(({ e, p, en, sub, val, dr }) => rows.push({
@@ -1472,6 +1473,7 @@ if (e[5] && o[5] === 0) why.push("+FB");
 const dr = e[3] != null && o[3] != null ? e[3] - o[3] : null;
 if (why.length || dr > 0) ups.push({ e, dr, why });
 });
+if (onlyRated) ups.splice(0, ups.length, ...ups.filter((x) => x.dr == null || x.dr > 0));
 ups.sort((p, q) => (q.dr || 0) - (p.dr || 0));
 upMore = Math.max(0, ups.length - 10);
 ups.slice(0, 10).forEach(({ e, dr, why }) => rows.push({
@@ -1693,13 +1695,13 @@ ctx.font = f(500, 13);
 ctx.fillText(fit(ctx, `${new Date().toLocaleString("ja-JP")}  ·  时间后的 * = 由成绩扫描发现（时间为运行书签的时间）  ·  单曲 rating 按现在的定数计算  ·  账号 Rating 的影响按三个枠各自 ÷50 截断推算`, HW - HP * 2), HP, H - 18);
 return toImage(cv);
 }
-async function drawSongCurve(e, range) {
+async function drawSongCurve(e, range, onlyRated) {
 const inRange = (t) => !range || (t >= range.from && t <= range.to);
 const obs = hist.obs.filter((o) => o.k === e.k).sort(byTime);
 const plays = obs.filter((o) => o.src === "p" && inRange(o.t));
 const { state, updates } = derive(hist);
 const impact = accountImpact(hist, updates);
-const mine = updates.filter((u) => u.k === e.k && inRange(u.t)).reverse().slice(0, 12);
+const mine = updates.filter((u) => u.k === e.k && inRange(u.t) && (!onlyRated || (impact.get(u)?.delta || 0) !== 0)).reverse().slice(0, 12);
 const cur = state[e.k];
 const pbPts = [];
 let best = -1;
@@ -2088,7 +2090,7 @@ const rangeCard = card();
 rangeCard.innerHTML = '<b>时间段</b><div id="oc-rp" style="display:flex;flex-wrap:wrap;gap:6px;margin:6px 0"></div>' +
 '<div id="oc-rd" style="display:flex;flex-wrap:wrap;align-items:center;gap:6px">自选 ' +
 '<input id="oc-ra" type="date" style="font-size:16px;padding:4px"> 〜 <input id="oc-rb" type="date" style="font-size:16px;padding:4px"></div>' +
-'<label style="display:flex;align-items:center;gap:6px;margin-top:6px"><input id="oc-or" type="checkbox" style="width:18px;height:18px;margin:0"> 推分只看账号 Rating 有变化的</label>';
+'<div id="oc-orw" style="margin-top:6px"></div>';
 const trendBox = card("padding:0;background:none");
 const presetBox = rangeCard.querySelector("#oc-rp");
 const ra = rangeCard.querySelector("#oc-ra"), rb = rangeCard.querySelector("#oc-rb");
@@ -2132,9 +2134,19 @@ if (!a || !b) { alert("请选择开始和结束日期"); return; }
 if (a > b) [a, b] = [b, a];
 setRange({ kind: "custom", from: a, to: b });
 }, rangeCard.querySelector("#oc-rd"));
-const orBox = rangeCard.querySelector("#oc-or");
-orBox.checked = onlyRated;
-orBox.onchange = () => { onlyRated = orBox.checked; lsSet("ongeki-onlyRated", onlyRated); showTrend(); };
+const orBtn = mkBtn("", () => {
+onlyRated = !onlyRated;
+lsSet("ongeki-onlyRated", onlyRated);
+paintOr();
+showTrend();
+if (openCurve) showCurve(openCurve, false);
+}, rangeCard.querySelector("#oc-orw"));
+const paintOr = () => {
+orBtn.textContent = (onlyRated ? "✓ " : "") + "只看账号 Rating 有变化的推分" + (onlyRated ? "（开）" : "（关）");
+orBtn.style.background = onlyRated ? "#d1127a" : "#fff";
+orBtn.style.color = onlyRated ? "#fff" : "#222";
+};
+paintOr();
 const search = card();
 search.innerHTML = '<b>单曲分数曲线</b><input id="oc-hq" placeholder="输入曲名搜索" autocomplete="off" ' +
 'style="display:block;width:100%;box-sizing:border-box;margin:6px 0;padding:6px 8px;font-size:16px"><div id="oc-hlist"></div>';
@@ -2166,7 +2178,7 @@ curveBox.style.display = "";
 curveBox.textContent = "正在生成…";
 if (scroll) curveBox.scrollIntoView({ behavior: "smooth", block: "start" });
 try {
-const img = await drawSongCurve(e, rangeOf(rangeSel));
+const img = await drawSongCurve(e, rangeOf(rangeSel), onlyRated);
 if (my !== curveSeq || seq !== renderSeq) return;
 showImage(img, `ongeki_${e.n.replace(/[\\/:*?"<>|\s]+/g, "_").slice(0, 40)}_${stamp}.png`, curveBox);
 mkBtn("收起", () => { openCurve = null; curveSeq++; curveBox.style.display = "none"; search.scrollIntoView({ block: "start" }); }, curveBox.firstChild);
