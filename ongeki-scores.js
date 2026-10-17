@@ -1000,6 +1000,7 @@ const c = chartByKey.get(u.k);
 if (!c || !c.const) { steps.push({ u, res: { noConst: true }, d: 0 }); return; }
 if (c.is_bonus) { steps.push({ u, res: { bonus: true }, d: 0 }); return; }
 const p0 = parts(st), u0 = units(st);
+const saved = { news: new Map(st.news), best: new Map(st.best), ps: st.ps && new Map(st.ps) };
 const res = { frame: c.is_new ? "NEW10" : "BEST50" };
 if (u.changes.some((x) => x.type === "ts" || x.type === "lamp" || x.type === "fb")) {
 Object.assign(res, place(c.is_new ? "news" : "best", u, tsMilliOf(u.k, u.after) * 100, c.is_new ? 10 : 50));
@@ -1010,9 +1011,14 @@ const r = place("ps", u, psUnitsOf(u.k, u.after), 50);
 Object.assign(res, { pEntered: r.entered, pIn: r.inFrame, pOut: r.out, pOutV: r.outV });
 } else res.pUnknown = true;
 }
+if (units(st) < u0) {
+st.news = saved.news; st.best = saved.best; st.ps = saved.ps;
+if (res.inFrame != null) Object.assign(res, { entered: false, inFrame: false, out: undefined, outV: undefined });
+if (res.pIn != null) Object.assign(res, { pEntered: false, pIn: false, pOut: undefined, pOutV: undefined });
+}
 res.dParts = parts(st).map((x, j) => x - p0[j]);
 res.exact = (units(st) - u0) / 50 / 1e5;
-steps.push({ u, res, d: Math.max(0, res.dParts.reduce((a, x) => a + x, 0)) });
+steps.push({ u, res, d: res.dParts.reduce((a, x) => a + x, 0) });
 });
 const total = steps.reduce((a, x) => a + x.d, 0);
 const gap = rOf(next) != null && rOf(prev) != null ? rOf(next) - (base + offset + total) : 0;
