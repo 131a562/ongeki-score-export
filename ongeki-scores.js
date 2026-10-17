@@ -189,6 +189,7 @@ if (!songs.length) diagnostics.push(`[genre=${genre} ${diff.name}] ${diagnose(pa
 return songs;
 };
 const charts = [];
+const scanDiffs = [];
 let genres = null; // 「全部类型」读不到时，改成逐个类型读取
 for (const diff of DIFFS) {
 log(`正在获取 ${diff.name} ...`);
@@ -213,6 +214,7 @@ songs.push(...(await fetchSongs(g, diff)));
 }
 }
 log(`${songs.length ? "✓" : "×"} ${diff.name}：${songs.length} 个谱面`);
+if (songs.length) scanDiffs.push(diff.name);
 charts.push(...songs);
 await sleep(1000); // 别给服务器太大压力
 }
@@ -682,12 +684,13 @@ return new Date(+m[1], m[2] - 1, +m[3], +m[4], +m[5]).getTime();
 const byTime = (a, b) => (a.t < b.t ? -1 : a.t > b.t ? 1 : 0);
 const chartKey = (title, diff) => norm(title) + "|" + diff;
 const HIST_V = 4;
-const emptyHist = () => ({ v: HIST_V, game: "ongeki", name: "", since: "", obs: [], snaps: [] });
+const emptyHist = () => ({ v: HIST_V, game: "ongeki", name: "", since: "", obs: [], snaps: [], scans: [] });
 const playId = (o) => `${o.t}|${norm(o.n)}|${o.d}|${o.s}`;
 const obsId = (o) => (o.src === "p" ? "p|" + playId(o) : [o.t, o.k, o.s, o.src].join("|") +
 (o.l != null ? "|l" + o.l : "") + (o.fb != null ? "|fb" + o.fb : "") + (o.ps != null ? "|ps" + o.ps + "/" + o.st : ""));
 function migrateHist(h) {
 if (!h || !h.obs || h.v !== HIST_V) return emptyHist();
+if (!h.scans) h.scans = h.since ? [h.since + "|" + DIFFS.map((d) => d.name).sort().join(",")] : [];
 return h;
 }
 const LAMP_RANK = { "": 0, FC: 1, AB: 2, "AB+": 3 };
@@ -816,7 +819,8 @@ const firstChanges = (st) => [
 function derive(hist) {
 const state = {}, pb = {}, scanned = new Set(), fresh = new Set(), updates = [];
 const lastScanT = {}, lastPlay = {}; // 每首歌：上一次成绩扫描的时间、上一次扫描之后最近的游玩 {o, u}
-const base = hist.since || "";
+const fullScans = (hist.scans || []).map((x) => { const [t, ds] = x.split("|"); return { t, ds: (ds || "").split(",") }; });
+const newChart = (o) => !String(o.k).endsWith("|?") && fullScans.some((f) => f.t < o.t && f.ds.includes(o.d));
 const mergeInto = (u, ch, next) => {
 u.after = next;
 for (const c of ch) {
@@ -827,7 +831,7 @@ else u.changes.push(c);
 };
 hist.obs.slice().sort(byTime).forEach((o) => {
 const before = state[o.k];
-if (!before && base && o.t > base) fresh.add(o.k);
+if (!before && newChart(o)) fresh.add(o.k);
 const known = scanned.has(o.k) || fresh.has(o.k);
 if (!before) {
 state[o.k] = absorb(blankState(), o).next;
@@ -877,6 +881,7 @@ out.obs = out.obs.filter((o) => o.t >= out.since).sort(byTime);
 const snaps = new Map();
 [...a.snaps, ...b.snaps].forEach((s) => snaps.set(s.t, s));
 out.snaps = [...snaps.values()].filter((s) => s.t >= out.since).sort(byTime);
+out.scans = [...new Set([...(a.scans || []), ...(b.scans || [])])].filter((x) => x >= out.since).sort();
 return out;
 }
 const tsMilliOf = (k, st) => {
@@ -896,6 +901,11 @@ const t = nowStr();
 if (playerName) hist.name = playerName;
 hist.v = HIST_V;
 if (!hist.since) hist.since = t; // 起点：这次的成绩扫描和快照就是历史的开始
+hist.scans = hist.scans || [];
+if (scanDiffs.length) {
+const mark = t + "|" + scanDiffs.slice().sort().join(",");
+if (!hist.scans.includes(mark)) hist.scans.push(mark);
+}
 const ids = new Set(hist.obs.map(obsId));
 plays.forEach((o) => { if (!ids.has(obsId(o))) { ids.add(obsId(o)); hist.obs.push(o); } });
 const { state } = derive(hist);
@@ -945,58 +955,96 @@ ps: s.ps ? new Map(s.ps.map((e) => [e[0], e[3]])) : null,
 const part = (m) => Math.floor([...m.values()].reduce((a, v) => a + v, 0) / 5000); // 0.001 单位
 const parts = (st) => [part(st.news), part(st.best), st.ps ? part(st.ps) : 0];
 const units = (st) => [st.news, st.best, st.ps].reduce((a, m) => a + (m ? [...m.values()].reduce((x, v) => x + v, 0) : 0), 0);
-const put = (m, k, v, cap) => {
+const put = (m, k, v, cap, keep) => {
 const was = m.has(k);
 if (!was || v > m.get(k)) m.set(k, v);
 if (m.size > cap) {
 let low = null, lowV = Infinity;
-m.forEach((x, kk) => { if (x < lowV || (x === lowV && kk === k)) { low = kk; lowV = x; } });
+m.forEach((x, kk) => { if (keep && kk === k) return; if (x < lowV || (x === lowV && kk === k)) { low = kk; lowV = x; } });
 m.delete(low);
+if (low !== k) return { entered: !was, inFrame: true, out: low, outV: lowV }; // 挤掉了别的歌
 }
 return { entered: !was && m.has(k), inFrame: m.has(k) };
 };
-let si = -1, st = null;
+const hasRows = (s) => !!(s && (s.best?.length || s.news?.length));
+const rOf = (s) => (s && s.r ? Math.round(s.r * 1000) : null);
+const groups = new Map();
 updates.slice().sort(byTime).forEach((u) => {
-while (si + 1 < snaps.length && snaps[si + 1].t < u.t) { si++; st = snaps[si].best?.length || snaps[si].news?.length ? fromSnap(snaps[si]) : null; }
+let i = -1;
+while (i + 1 < snaps.length && snaps[i + 1].t < u.t) i++;
+if (i < 0 || !hasRows(snaps[i])) { out.set(u, { noSnap: true }); return; }
+if (!groups.has(i)) groups.set(i, []);
+groups.get(i).push(u);
+});
+groups.forEach((list, i) => {
+const prev = snaps[i], next = snaps[i + 1] || null;
+const keys = (rows) => (rows && rows.length ? new Set(rows.map((e) => e[0])) : null);
+const nextIn = hasRows(next) ? { news: keys(next.news) || new Set(), best: keys(next.best) || new Set(), ps: keys(next.ps) } : null;
+const st = fromSnap(prev);
+const base = parts(st).reduce((a, x) => a + x, 0);
+const offset = rOf(prev) != null ? rOf(prev) - base : 0;
+const place = (fk, k, v, cap) => {
+const inNext = nextIn && nextIn[fk] ? nextIn[fk].has(k) : null;
+if (inNext === false && !st[fk].has(k)) return { entered: false, inFrame: false };
+return put(st[fk], k, v, cap, inNext === true);
+};
+const steps = []; // [{u, res, d}]  d = 账号 Rating 显示值的变化（0.001 单位）
+list.forEach((u) => {
 const c = chartByKey.get(u.k);
-if (!st) { out.set(u, { noSnap: true }); return; }
-if (!c || !c.const) { out.set(u, { noConst: true }); return; }
-if (c.is_bonus) { out.set(u, { bonus: true }); return; }
+if (!c || !c.const) { steps.push({ u, res: { noConst: true }, d: 0 }); return; }
+if (c.is_bonus) { steps.push({ u, res: { bonus: true }, d: 0 }); return; }
 const p0 = parts(st), u0 = units(st);
-const frameName = c.is_new ? "NEW10" : "BEST50";
-const res = { frame: frameName };
+const res = { frame: c.is_new ? "NEW10" : "BEST50" };
 if (u.changes.some((x) => x.type === "ts" || x.type === "lamp" || x.type === "fb")) {
-Object.assign(res, put(c.is_new ? st.news : st.best, u.k, tsMilliOf(u.k, u.after) * 100, c.is_new ? 10 : 50));
+Object.assign(res, place(c.is_new ? "news" : "best", u.k, tsMilliOf(u.k, u.after) * 100, c.is_new ? 10 : 50));
 }
 if (u.changes.some((x) => x.type === "star")) {
 if (st.ps) {
-const r = put(st.ps, u.k, psUnitsOf(u.k, u.after), 50);
-res.pEntered = r.entered;
-res.pIn = r.inFrame;
+const r = place("ps", u.k, psUnitsOf(u.k, u.after), 50);
+Object.assign(res, { pEntered: r.entered, pIn: r.inFrame, pOut: r.out, pOutV: r.outV });
 } else res.pUnknown = true;
 }
-const p1 = parts(st);
-res.dParts = p1.map((x, i) => x - p0[i]);
-res.delta = res.dParts.reduce((a, x) => a + x, 0); // 账号 Rating 显示值的变化（0.001 单位）
+res.dParts = parts(st).map((x, j) => x - p0[j]);
 res.exact = (units(st) - u0) / 50 / 1e5;
-out.set(u, res);
+steps.push({ u, res, d: res.dParts.reduce((a, x) => a + x, 0) });
+});
+const total = steps.reduce((a, x) => a + x.d, 0);
+const gap = rOf(next) != null && rOf(prev) != null ? rOf(next) - (base + offset + total) : 0;
+let cur = base + offset;
+steps.forEach((x, k) => {
+x.res.ratingBefore = cur;
+cur += x.d;
+if (x.res.frame) x.res.delta = x.d;
+if (gap && k === steps.length - 1) x.res.gap = gap;
+x.res.ratingAfter = cur + (k === steps.length - 1 ? gap : 0);
+out.set(x.u, x.res);
+});
 });
 return out;
 }
 const GOOD = "#7ee0a0";
 function impactText(im) {
 if (!im || im.noSnap) return ["之前没有快照，无法推算账号 Rating", C.line];
-if (im.noConst) return ["定数未知，无法推算账号 Rating", C.muted];
-if (im.bonus) return ["ボーナストラック，不计入 Rating", C.muted];
+const gap = im.gap ? ` · 另有 ${im.gap > 0 ? "+" : "−"}${(Math.abs(im.gap) / 1000).toFixed(3)} 来自没记录到的变化` : "";
+if (im.noConst) return ["定数未知，无法推算账号 Rating" + gap, C.muted];
+if (im.bonus) return ["ボーナストラック，不计入 Rating" + gap, C.muted];
 const bits = [];
 if (im.inFrame != null) bits.push(im.entered ? "进入 " + im.frame : im.inFrame ? im.frame + " 内提升" : "未进入 " + im.frame);
 if (im.pIn != null) bits.push(im.pEntered ? "进入 P-SCORE50" : im.pIn ? "P-SCORE50 内提升" : "未进入 P-SCORE50");
 if (im.pUnknown) bits.push("P-SCORE 影响未知（旧快照）");
 const head = bits.join(" · ");
-if (im.delta > 0) return [head + " · 账号 Rating +" + (im.delta / 1000).toFixed(3), GOOD];
-if (im.exact > 0) return [head + " · 账号 Rating 不变（+" + im.exact.toFixed(5) + "，未进位）", C.muted];
-return [head + " · 账号 Rating 不变", C.muted];
+if (im.delta > 0) return [head + " · 账号 Rating +" + (im.delta / 1000).toFixed(3) + gap, GOOD];
+if (im.exact > 0) return [head + " · 账号 Rating 不变（+" + im.exact.toFixed(5) + "，未进位）" + gap, C.muted];
+return [head + " · 账号 Rating 不变" + gap, C.muted];
 }
+const firstLast = (en) => {
+const f = (x) => x.toLocaleString("en-US");
+let t = en.s0 == null ? f(en.s1) + "（首次）" : en.s1 > en.s0 ? `${f(en.s0)} → ${f(en.s1)}（+${f(en.s1 - en.s0)}）` : f(en.s1);
+if (en.l1 && en.l1 !== (en.l0 || "")) t += " · " + (en.l0 == null ? en.l1 : `${en.l0 || "CLEAR"}→${en.l1}`);
+if (en.fb1 && en.fb0 === 0) t += en.s0 == null ? " · FB" : " · +FB";
+if (en.n > 1) t += ` · 共 ${en.n} 次推分`;
+return t;
+};
 function changeText(u) {
 const parts = [];
 for (const c of u.changes) {
@@ -1070,6 +1118,7 @@ return true;
 const syncMerge = async (acc, local) => {
 for (let attempt = 0; attempt < 3; attempt++) {
 const { data, sha } = await syncGet(acc);
+if (data && !data.obs) throw new Error("云端数据格式不对，没有改动云端");
 const merged = data && data.obs ? mergeHist(normalizeKeys(migrateHist(data)), local) : local;
 if (data && JSON.stringify(data) === JSON.stringify(merged)) return merged;
 if (await syncPut(acc, merged, sha)) return merged;
@@ -1096,6 +1145,10 @@ return acc;
 let syncNote = "";
 let hist = emptyHist();
 async function recordAndSync(forceAsk, reset) {
+if (!playerName) {
+syncNote = "没有读到玩家名，本次没有记录历史";
+return;
+}
 let plays = [];
 let playNote = "";
 try {
@@ -1105,8 +1158,29 @@ if (!plays.length) playNote = "（プレイ履歴未能解析，只用成绩扫�
 } catch (e) {
 playNote = "（プレイ履歴读取失败）";
 }
-const local = reset ? emptyHist() : normalizeKeys(loadLocalHist());
+let local = reset ? emptyHist() : normalizeKeys(loadLocalHist());
 if (reset) local.resetAt = nowStr(); // 重开的时间：合并时起点以它为准（见 mergeHist）
+let acc = null, syncErr = null;
+if (SYNC_URL) {
+const accounts = loadAccounts();
+acc = forceAsk ? undefined : accounts[playerName];
+try {
+if (acc === undefined) {
+await syncFetch("_ping"); // 先确认连得上，连不上就不弹窗询问（抛出的错误会显示在「历史」页）
+acc = await askAccount();
+accounts[playerName] = acc;
+saveAccounts(accounts);
+}
+if (acc) {
+log("正在读取云端历史 ...");
+const { data } = await syncGet(acc);
+if (data && !data.obs) throw new Error("云端数据格式不对，没有改动云端");
+if (data) local = mergeHist(normalizeKeys(migrateHist(data)), local);
+}
+} catch (e) {
+syncErr = e;
+}
+}
 if (!local.since) log("历史记录从这次开始：保存当前全部已游玩谱面的成绩作为起点（之前的游玩不记）");
 const lastQuery = [...local.snaps.map((x) => x.t), ...local.obs.filter((o) => o.src === "b").map((o) => o.t)].sort().pop() || "";
 const fresh = new Map(plays.map((o) => [playId(o), o]));
@@ -1121,17 +1195,12 @@ plays = lastQuery ? plays.filter((o) => o.t >= lastQuery) : [];
 hist = applyUpdate(local, plays);
 syncNote = (saveLocalHist(hist) ? "历史记录已保存在本机" : "本机存储空间不足，历史记录未保存") + playNote;
 if (!SYNC_URL) return;
-const accounts = loadAccounts();
-const me = playerName || "_";
-let acc = forceAsk ? undefined : accounts[me];
-try {
-if (acc === undefined) {
-await syncFetch("_ping"); // 先确认连得上，连不上就不弹窗询问（抛出的错误会显示在「历史」页）
-acc = await askAccount();
-accounts[me] = acc;
-saveAccounts(accounts);
+if (syncErr) {
+syncNote = "同步失败：" + syncErr.message + "。已保存在本机，下次运行会重试" + playNote;
+return;
 }
 if (!acc) { syncNote += "（未开启云端同步）"; return; }
+try {
 log("正在同步历史记录 ...");
 hist = await syncMerge(acc, hist);
 saveLocalHist(hist);
@@ -1186,7 +1255,8 @@ const pts = series.flatMap((s) => s.pts);
 if (!pts.length) return;
 let t0 = Math.min(...pts.map((p) => p[0])), t1 = Math.max(...pts.map((p) => p[0]));
 let v0 = Math.min(...pts.map((p) => p[1])), v1 = Math.max(...pts.map((p) => p[1]));
-if (t1 - t0 < 864e5) { t0 -= 432e5; t1 += 432e5; }
+if (opt.xLabels) { t0 = -0.5; t1 = Math.max(opt.xLabels.length - 1, 0) + 0.5; } // 等间隔：两端各留半格
+else if (t1 - t0 < 864e5) { t0 -= 432e5; t1 += 432e5; }
 const span = Math.max(v1 - v0, opt.minSpan);
 const mid = (v0 + v1) / 2;
 v0 = mid - span * 0.6;
@@ -1221,11 +1291,16 @@ ctx.textAlign = "right";
 });
 ctx.textAlign = "center";
 ctx.fillStyle = C.muted;
+if (opt.xLabels) {
+const n = opt.xLabels.length, step = Math.max(1, Math.ceil(n / 8));
+opt.xLabels.forEach((lb, i) => { if (i % step === 0 || i === n - 1) ctx.fillText(lb, X(i), B + 24); });
+} else {
 const ticks = Math.min(6, Math.max(2, Math.round((t1 - t0) / 864e5) + 1));
 for (let i = 0; i < ticks; i++) {
 const t = t0 + ((t1 - t0) * i) / (ticks - 1);
 const d = new Date(t);
 ctx.fillText(`${d.getMonth() + 1}/${d.getDate()}`, X(t), B + 24);
+}
 }
 ctx.textAlign = "left";
 series.forEach((s) => {
@@ -1295,25 +1370,101 @@ seg((r1 / 1000).toFixed(3), C.accent, 800);
 seg("Rating " + (r0 != null ? (r0 / 1000).toFixed(3) + " →" : "→"), C.muted);
 return right - x;
 }
-async function drawTrend(range = {}) {
+async function drawTrend(range, onlyRated) {
 const { updates } = derive(hist);
-const impact = accountImpact(hist, updates);
-const snaps = hist.snaps;
-const inRange = (t) => (!range.from || (range.fromExcl ? t > range.from : t >= range.from)) && (!range.to || t <= range.to);
-const upTo = (t) => [...snaps].reverse().find((x) => x.t <= t);
-const last = range.to ? upTo(range.to) : snaps[snaps.length - 1];
-const prev0 = !range.from ? snaps[0]
-: range.fromExcl ? upTo(range.from) : [...snaps].reverse().find((x) => x.t < range.from) || snaps.find((x) => x.t >= range.from);
-const prev = prev0 && last && prev0.t < last.t ? prev0 : null;
-const rows = []; // {side:'L'|'R', d, n, color, right, sub}
+const impact = accountImpact(hist, updates); // 账号 Rating 的影响要用全部记录算，显示时再按时间段筛
+const inRange = (t) => !range || (t >= range.from && t <= range.to);
+const allSnaps = hist.snaps;
+const upto = allSnaps.filter((s) => !range || s.t <= range.to);
+const last = upto[upto.length - 1];
+const prev = !range ? allSnaps[allSnaps.length - 2]
+: [...allSnaps].reverse().find((s) => s.t < range.from) || allSnaps.find((s) => inRange(s.t));
+const snaps = !range ? allSnaps : allSnaps.filter((s) => inRange(s.t) || s === prev);
+const hasPrev = !!(prev && last && prev !== last);
+const m3 = (v) => (v / 1000).toFixed(3);
+const signedM = (d) => (d > 0 ? "+" : d < 0 ? "−" : "±") + m3(Math.abs(d));
+const ratingAt = (t, strict) => {
+const ok = (x) => (strict ? x < t : x <= t);
+let best = null;
+allSnaps.forEach((sn) => { if (sn.r && ok(sn.t) && (!best || sn.t >= best.t)) best = { t: sn.t, r: Math.round(sn.r * 1000) }; });
+updates.forEach((u) => {
+const im = impact.get(u);
+if (im && im.ratingAfter != null && ok(u.t) && (!best || u.t >= best.t)) best = { t: u.t, r: im.ratingAfter };
+});
+return best ? best.r : null;
+};
+const startR = range ? ratingAt(range.from, true) : null;
+const endR = range ? ratingAt(range.to, false) : null;
+const sameDay = !!range && range.from.slice(0, 10) === range.to.slice(0, 10);
+const nameOf = new Map();
+allSnaps.forEach((sn) => [...sn.best, ...sn.news, ...(sn.ps || [])].forEach((e) => nameOf.set(e[0], e[1])));
+hist.obs.forEach((o) => nameOf.set(o.k, o.n));
+const rows = []; // {side:'L'|'R', e, p, color, right, sub}
 let upMore = 0;
-if (last && prev) {
+if (range) {
+const mem = new Map();
+const entry = (id, start) => {
+if (!mem.has(id)) mem.set(id, { start, end: start, before: null, after: null, s0: null, s1: null, l0: null, l1: null, fb0: null, fb1: 0, st0: null, st1: null, n: 0 });
+return mem.get(id);
+};
+updates.filter((u) => inRange(u.t)).forEach((u) => {
+const im = impact.get(u);
+if (!im) return;
+const rp = ratingPair(u);
+if (im.inFrame) {
+const en = entry("t|" + u.k, !im.entered);
+en.end = true;
+if (en.before == null && !im.entered && rp.r0 != null) en.before = rp.r0;
+en.after = rp.r1;
+if (!en.n) {
+en.s0 = u.before ? u.before.s : null;
+en.l0 = u.before && u.before.has.l ? u.before.l : null;
+en.fb0 = u.before ? (u.before.has.fb ? u.before.fb : null) : 0;
+}
+en.n++;
+en.s1 = u.after.s;
+if (u.after.has.l) en.l1 = u.after.l;
+if (u.after.fb) en.fb1 = 1;
+}
+if (im.out) { const en = entry("t|" + im.out, true); en.end = false; if (en.after == null) en.after = im.outV / 100; }
+if (im.pIn) {
+const en = entry("p|" + u.k, !im.pEntered);
+en.end = true;
+if (en.before == null && !im.pEntered && rp.p0 != null) en.before = rp.p0;
+en.after = rp.p1;
+if (en.st0 == null) en.st0 = u.before && u.before.has.ps ? u.before.st : 0;
+en.st1 = u.after.st;
+en.n++;
+}
+if (im.pOut) { const en = entry("p|" + im.pOut, true); en.end = false; if (en.after == null) en.after = im.pOutV; }
+});
+const ups = [];
+mem.forEach((en, id) => {
+const p = id[0] === "p", k = id.slice(2);
+const e = [k, nameOf.get(k) || k];
+const val = (v) => (p ? "P " + fmtPs(v / 1e5) : m3(v));
+const sub = p ? (en.st1 != null && en.st1 > (en.st0 || 0) ? `☆${en.st0 || 0}→☆${en.st1}` : "") : en.n ? firstLast(en) : "";
+if (en.after == null) return;
+if (!en.start && en.end) rows.push({ side: "L", e, p, color: GOOD, right: "新进 " + val(en.after), sub });
+else if (en.start && !en.end) rows.push({ side: "R", e, p, color: "#ff8a8a", right: "移出 " + val(en.after) });
+else if (en.start && en.end) ups.push({ e, p, en, sub, val, dr: en.after - (en.before == null ? en.after : en.before) });
+});
+const w = (x) => (x.p ? x.dr : x.dr * 100);
+ups.sort((a, b) => w(b) - w(a));
+upMore = Math.max(0, ups.length - 10);
+ups.slice(0, 10).forEach(({ e, p, en, sub, val, dr }) => rows.push({
+side: "L", e, p, color: dr > 0 ? (p ? C.plat : C["SSS+"]) : C.muted,
+right: en.before == null ? val(en.after) : dr <= 0 ? `${val(en.after)}（rating 不变）`
+: p ? `P ${fmtPs(en.before / 1e5)} → ${fmtPs(en.after / 1e5)}（+${fmtPs(dr / 1e5)}）` : `${m3(en.before)} → ${m3(en.after)}（+${m3(dr)}）`,
+sub,
+}));
+} else if (hasPrev) {
 const toMap = (s) => new Map([...s.best, ...s.news].map((e) => [e[0], e]));
 const a = toMap(prev), b = toMap(last);
 const ups = [];
 b.forEach((e, k) => {
 const o = a.get(k);
-if (!o) { rows.push({ side: "L", e, color: GOOD, right: "新进" + (e[3] != null ? " " + (e[3] / 1000).toFixed(3) : " " + e[2].toLocaleString("en-US")) }); return; }
+if (!o) { rows.push({ side: "L", e, color: GOOD, right: "新进" + (e[3] != null ? " " + m3(e[3]) : " " + e[2].toLocaleString("en-US")) }); return; }
 const why = [];
 if (e[2] > o[2]) why.push("+" + (e[2] - o[2]).toLocaleString("en-US"));
 if (e[4] != null && o[4] != null && LAMP_RANK[e[4]] > LAMP_RANK[o[4]]) why.push(`${o[4] || "CLEAR"}→${e[4]}`);
@@ -1325,13 +1476,11 @@ ups.sort((p, q) => (q.dr || 0) - (p.dr || 0));
 upMore = Math.max(0, ups.length - 10);
 ups.slice(0, 10).forEach(({ e, dr, why }) => rows.push({
 side: "L", e, color: dr == null || dr > 0 ? C["SSS+"] : C.muted,
-right: dr == null ? e[2].toLocaleString("en-US")
-: dr > 0 ? `${((e[3] - dr) / 1000).toFixed(3)} → ${(e[3] / 1000).toFixed(3)}（+${(dr / 1000).toFixed(3)}）`
-: `${(e[3] / 1000).toFixed(3)}（rating 不变）`,
+right: dr == null ? e[2].toLocaleString("en-US") : dr > 0 ? `${m3(e[3] - dr)} → ${m3(e[3])}（+${m3(dr)}）` : `${m3(e[3])}（rating 不变）`,
 sub: why.join(" · "),
 }));
 a.forEach((e, k) => {
-if (!b.has(k)) rows.push({ side: "R", e, color: "#ff8a8a", right: "移出" + (e[3] != null ? " " + (e[3] / 1000).toFixed(3) : " " + e[2].toLocaleString("en-US")) });
+if (!b.has(k)) rows.push({ side: "R", e, color: "#ff8a8a", right: "移出" + (e[3] != null ? " " + m3(e[3]) : " " + e[2].toLocaleString("en-US")) });
 });
 if (prev.ps && last.ps) {
 const pa = new Map(prev.ps.map((e) => [e[0], e])), pb2 = new Map(last.ps.map((e) => [e[0], e]));
@@ -1343,13 +1492,17 @@ else if (e[2] > o[2]) rows.push({ side: "L", e, p: true, color: C.plat, right: `
 pa.forEach((e, k) => { if (!pb2.has(k)) rows.push({ side: "R", e, p: true, color: "#ff8a8a", right: `移出 P ${fmtPs(e[3] / 1e5)}` }); });
 }
 }
-const inRangeUpdates = updates.filter((u) => inRange(u.t)).reverse();
-const MAX_ROWS = 100;
-const recent = inRangeUpdates.slice(0, MAX_ROWS);
+const inRAll = updates.filter((u) => inRange(u.t));
+const rated = (u) => { const im = impact.get(u); return !!im && (im.delta || 0) !== 0; };
+const inR = onlyRated ? inRAll.filter(rated) : inRAll;
+const hiddenN = inRAll.length - inR.length;
+const RECENT_MAX = range ? 30 : 20;
+const recent = inR.slice(-RECENT_MAX).reverse();
+const recentMore = inR.length - recent.length;
 const ROW = 34, SUBROW = 20, PB_ROW = 58;
 const colRows = (side) => rows.filter((r) => r.side === side).reduce((a, r) => a + ROW + (r.sub ? SUBROW : 0), 0);
 const changeH = Math.max(colRows("L") + (upMore ? ROW : 0), colRows("R"), ROW);
-const H = 150 + 380 + 30 + 86 + changeH + 30 + 64 + Math.max(recent.length, 1) * PB_ROW + (inRangeUpdates.length > MAX_ROWS ? 34 : 0) + 50;
+const H = 150 + 380 + 30 + 86 + changeH + 30 + 64 + Math.max(recent.length, 1) * PB_ROW + (recentMore ? 34 : 0) + 50;
 const { cv, ctx } = newCanvas(HW, H);
 ctx.fillStyle = C.accent;
 ctx.font = f(800, 16);
@@ -1357,50 +1510,96 @@ ctx.fillText("O.N.G.E.K.I.  RATING HISTORY", HP, 42);
 ctx.fillStyle = C.fg;
 ctx.font = f(800, 42);
 ctx.fillText(fit(ctx, playerName || hist.name || "", 520), HP, 96);
-const t0 = prev ? prev.t : (range.from || ""), t1 = last ? last.t : "";
-const line = snaps.filter((s) => s.r && s.t >= t0 && (!t1 || s.t <= t1)).map((s) => [timeMs(s.t), s.r]).sort((a, b) => a[0] - b[0]);
+const line = snaps.filter((s) => s.r).map((s) => [timeMs(s.t), s.r]).sort((a, b) => a[0] - b[0]);
 const days = new Map();
 for (const [ms, r] of line) {
 const d = new Date(ms);
 days.set(new Date(d.getFullYear(), d.getMonth(), d.getDate(), 12).getTime(), r);
 }
 const daily = [...days.entries()];
-if (line.length) {
-const now = line[line.length - 1][1];
-histStat(ctx, "RATING", now.toFixed(3), HW - HP, C["SSS+"], true);
-histStat(ctx, "这段时间", signed(now - line[0][1]), HW - HP - 230, C.plat);
-histStat(ctx, "推分", String(inRangeUpdates.length), HW - HP - 400, C.accent);
+const first = allSnaps.find((s) => s.r);
+if (range && endR != null) {
+histStat(ctx, "RATING", m3(endR), HW - HP, C["SSS+"], true);
+histStat(ctx, range.label, startR != null ? signedM(endR - startR) : "-", HW - HP - 230, C.plat);
+histStat(ctx, "累计", first ? signedM(endR - Math.round(first.r * 1000)) : "-", HW - HP - 400, C.accent);
+} else if (!range && last && last.r) {
+const now = Math.round(last.r * 1000);
+const base30 = [...allSnaps].reverse().find((s) => s.r && timeMs(s.t) <= Date.now() - 30 * 864e5) || first;
+histStat(ctx, "RATING", m3(now), HW - HP, C["SSS+"], true);
+histStat(ctx, "30 天", signedM(now - Math.round(base30.r * 1000)), HW - HP - 230, C.plat);
+histStat(ctx, "累计", signedM(now - Math.round(first.r * 1000)), HW - HP - 400, C.accent);
 }
 ctx.fillStyle = C.muted;
 ctx.font = f(500, 14);
-ctx.fillText(`${range.label || "全部"}${line.length ? `  ·  ${daily.length} 天的记录（${new Date(line[0][0]).toLocaleDateString("ja-JP")} – ${new Date(line[line.length - 1][0]).toLocaleDateString("ja-JP")}）` : "  ·  这段时间没有快照"}`, HP, 128);
+const fmtDay = (ms) => new Date(ms).toLocaleDateString("ja-JP");
+const span = range ? `${range.label}（${sameDay ? `${range.from.slice(0, 10)} ${range.from.slice(11)} – ${range.to.slice(11)}` : `${range.from.slice(0, 10)} – ${range.to.slice(0, 10)}`}）`
+: daily.length ? `${daily.length} 天的记录（${fmtDay(daily[0][0])} – ${fmtDay(daily[daily.length - 1][0])}）` : "";
+ctx.fillText(fit(ctx, span + (hist.since ? `　·　从 ${hist.since} 开始记录` : ""), 640), HP, 128);
 let y = 150;
-lineChart(ctx, HP, y, HW - HP * 2, 360, [
-{ label: "RATING（游戏内，每天）", color: C["SSS+"], pts: daily, width: 4 },
-], { minSpan: 0.05, fmt: (v) => v.toFixed(3) });
-if (daily.length === 1) {
+const emptyChart = (text) => {
+rrect(ctx, HP, y, HW - HP * 2, 360, 12);
+ctx.fillStyle = C.card;
+ctx.fill();
 ctx.fillStyle = C.muted;
 ctx.font = f(500, 16);
 ctx.textAlign = "center";
-ctx.fillText("目前只有 1 天的记录，以后每天运行一次就能连成线", HW / 2, y + 60);
+ctx.fillText(text, HW / 2, y + 60);
 ctx.textAlign = "left";
+};
+const chartNote = (text) => {
+ctx.fillStyle = C.muted;
+ctx.font = f(500, 16);
+ctx.textAlign = "center";
+ctx.fillText(text, HW / 2, y + 60);
+ctx.textAlign = "left";
+};
+if (sameDay) {
+const pts = [], labels = [];
+let curR = startR;
+if (curR != null) { pts.push([0, curR / 1000]); labels.push(range.from.slice(11) === "00:00" ? "0:00" : range.from.slice(11)); }
+inRAll.forEach((u) => {
+const im = impact.get(u);
+if (!im || im.ratingAfter == null) return;
+if (curR == null) { curR = im.ratingBefore; pts.push([0, curR / 1000]); labels.push("开始"); }
+if (im.ratingAfter > curR) { curR = im.ratingAfter; pts.push([pts.length, curR / 1000]); labels.push(u.t.slice(11)); }
+});
+if (!pts.length) emptyChart("这段时间里没有记录");
+else {
+lineChart(ctx, HP, y, HW - HP * 2, 360, [
+{ label: "RATING（每次上涨）", color: C["SSS+"], pts, width: 4, dot: 6 },
+], { minSpan: 0.01, fmt: (v) => v.toFixed(3), xLabels: labels });
+if (pts.length === 1) chartNote("这段时间里账号 Rating 没有上涨");
+}
+} else if (!daily.length) emptyChart("这段时间里没有快照");
+else {
+lineChart(ctx, HP, y, HW - HP * 2, 360, [
+{ label: "RATING（游戏内，每天）", color: C["SSS+"], pts: daily, width: 4 },
+], { minSpan: 0.05, fmt: (v) => v.toFixed(3) });
+if (daily.length === 1) chartNote("目前只有 1 天的记录，以后每天运行一次就能连成线");
 }
 y += 380;
-histSection(ctx, "B50 / P-SCORE50 变化" + (prev ? `（${prev.t} → ${last.t}）` : ""), y, C.accent);
-if (prev) {
-const dr = Math.round((last.r - prev.r) * 1000);
+histSection(ctx, "B50 / P-SCORE50 变化" + (range ? `（${range.label}）` : hasPrev ? `（对比 ${prev.t}）` : ""), y, C.accent);
 ctx.textAlign = "right";
+if (range && startR != null && endR != null) {
+const dr = endR - startR;
 ctx.font = f(800, 18);
 ctx.fillStyle = dr > 0 ? GOOD : dr < 0 ? "#ff8a8a" : C.muted;
-ctx.fillText(`账号 Rating ${prev.r.toFixed(3)} → ${last.r.toFixed(3)}　${dr > 0 ? "+" : dr < 0 ? "−" : "±"}${(Math.abs(dr) / 1000).toFixed(3)}`, HW - HP, y + 32);
-if (prev.parts && last.parts) {
-const fmt = (d) => (d > 0 ? "+" : d < 0 ? "−" : "±") + (Math.abs(d) / 1000).toFixed(3);
+ctx.fillText(`账号 Rating ${m3(startR)} → ${m3(endR)}　${signedM(dr)}`, HW - HP, y + 32);
 ctx.font = f(500, 14);
 ctx.fillStyle = C.muted;
-ctx.fillText(["NEW10", "BEST50", "P-SCORE50"].map((name, i) => `${name} ${fmt(last.parts[i] - prev.parts[i])}`).join("　·　"), HW - HP, y + 56);
+ctx.fillText("按推分的游玩时间统计（成绩扫描发现的推分按读取的时间）", HW - HP, y + 56);
+} else if (!range && hasPrev) {
+const dr = Math.round((last.r - prev.r) * 1000);
+ctx.font = f(800, 18);
+ctx.fillStyle = dr > 0 ? GOOD : dr < 0 ? "#ff8a8a" : C.muted;
+ctx.fillText(`账号 Rating ${prev.r.toFixed(3)} → ${last.r.toFixed(3)}　${signedM(dr)}`, HW - HP, y + 32);
+if (prev.parts && last.parts) {
+ctx.font = f(500, 14);
+ctx.fillStyle = C.muted;
+ctx.fillText(["NEW10", "BEST50", "P-SCORE50"].map((name, i) => `${name} ${signedM(last.parts[i] - prev.parts[i])}`).join("　·　"), HW - HP, y + 56);
+}
 }
 ctx.textAlign = "left";
-}
 y += 86;
 const colW = (HW - HP * 2 - 24) / 2;
 const rowText = (x, yy, r) => {
@@ -1419,18 +1618,18 @@ ctx.fillText(r.right, x + colW - 6, yy);
 if (r.sub) {
 ctx.fillStyle = C.muted;
 ctx.font = f(500, 13);
-ctx.fillText(r.sub, x + colW - 6, yy + SUBROW);
+ctx.fillText(fit(ctx, r.sub, colW - 12), x + colW - 6, yy + SUBROW);
 }
 ctx.textAlign = "left";
 return ROW + (r.sub ? SUBROW : 0);
 };
 ctx.font = f(700, 15);
-if (!prev) {
+if (!range && !hasPrev) {
 ctx.fillStyle = C.muted;
-ctx.fillText("这段时间里没有两个快照可以对比", HP, y);
+ctx.fillText("还没有上一次的快照可以对比", HP, y);
 } else if (!rows.length) {
 ctx.fillStyle = C.muted;
-ctx.fillText("和上次相比没有变化", HP, y);
+ctx.fillText(range ? "这段时间里 B50 / P-SCORE50 没有变化" : "和上次相比没有变化", HP, y);
 } else {
 let yy = y;
 rows.filter((r) => r.side === "L").forEach((r) => { yy += rowText(HP, yy, r); });
@@ -1444,12 +1643,20 @@ rows.filter((r) => r.side === "R").forEach((r) => { yy += rowText(HP + colW + 24
 }
 y += changeH;
 y += 6;
-histSection(ctx, `推分（${range.label || "全部"}，${inRangeUpdates.length} 次）`, y, C["SSS+"]);
+histSection(ctx, (range ? `推分（${range.label}，${inR.length} 次）` : "最近的推分") + (onlyRated ? "　只看账号 Rating 有变化的" : ""), y, C["SSS+"]);
+if (onlyRated && hiddenN) {
+ctx.textAlign = "right";
+ctx.fillStyle = C.muted;
+ctx.font = f(500, 14);
+ctx.fillText(`另有 ${hiddenN} 次推分没有让账号 Rating 变化（已隐藏）`, HW - HP, y + 32);
+ctx.textAlign = "left";
+}
 y += 64;
 if (!recent.length) {
 ctx.fillStyle = C.muted;
 ctx.font = f(700, 15);
-ctx.fillText("这段时间没有推分。TS、FC/AB/FB 标记、プラチナスコア☆有提升时会记在这里", HP, y);
+ctx.fillText(onlyRated ? (range ? "这段时间里没有让账号 Rating 变化的推分" : "还没有让账号 Rating 变化的推分")
+: range ? "这段时间里没有推分" : "暂无记录。TS、FC/AB/FB 标记、プラチナスコア☆有提升时会记在这里", HP, y);
 }
 recent.forEach((u) => {
 ctx.fillStyle = C.muted;
@@ -1476,26 +1683,32 @@ ctx.fillStyle = "rgba(255,255,255,0.06)";
 ctx.fillRect(HP, y + 36, HW - HP * 2, 1);
 y += PB_ROW;
 });
-if (inRangeUpdates.length > MAX_ROWS) {
+if (recentMore) {
 ctx.fillStyle = C.muted;
 ctx.font = f(500, 15);
-ctx.fillText(`另有 ${inRangeUpdates.length - MAX_ROWS} 次更早的推分没有列出，请缩短时间段`, HP, y);
+ctx.fillText(`更早的 ${recentMore} 次推分没有列出（可以把时间段选短一点）`, HP, y);
 }
 ctx.fillStyle = C.muted;
 ctx.font = f(500, 13);
 ctx.fillText(fit(ctx, `${new Date().toLocaleString("ja-JP")}  ·  时间后的 * = 由成绩扫描发现（时间为运行书签的时间）  ·  单曲 rating 按现在的定数计算  ·  账号 Rating 的影响按三个枠各自 ÷50 截断推算`, HW - HP * 2), HP, H - 18);
 return toImage(cv);
 }
-async function drawSongCurve(e) {
+async function drawSongCurve(e, range) {
+const inRange = (t) => !range || (t >= range.from && t <= range.to);
 const obs = hist.obs.filter((o) => o.k === e.k).sort(byTime);
-const plays = obs.filter((o) => o.src === "p");
+const plays = obs.filter((o) => o.src === "p" && inRange(o.t));
 const { state, updates } = derive(hist);
 const impact = accountImpact(hist, updates);
-const mine = updates.filter((u) => u.k === e.k).reverse().slice(0, 12);
+const mine = updates.filter((u) => u.k === e.k && inRange(u.t)).reverse().slice(0, 12);
 const cur = state[e.k];
 const pbPts = [];
 let best = -1;
-obs.forEach((o) => { if (o.s > best) { best = o.s; pbPts.push([timeMs(o.t), o.s]); } });
+obs.forEach((o) => {
+if (o.s <= best) return;
+best = o.s;
+if (range && o.t < range.from) pbPts[0] = [timeMs(range.from), o.s];
+else if (inRange(o.t)) pbPts.push([timeMs(o.t), o.s]);
+});
 const chart = chartByKey.get(e.k);
 const jacket = chart ? await loadJacket(chart.img) : null;
 const rows = plays.slice(-15).reverse();
@@ -1529,7 +1742,7 @@ ctx.fillStyle = C.muted;
 ctx.font = f(500, 14);
 ctx.textAlign = "right";
 ctx.fillText([best > 0 ? rankOf(best) : "", rNow != null ? "单曲 Rating " + (rNow / 1000).toFixed(3) : "",
-pNow ? "P-rate " + fmtPs(pNow / 1e5) : "", `记录到 ${plays.length} 次游玩`].filter(Boolean).join("　·　"), HW - HP, 128);
+pNow ? "P-rate " + fmtPs(pNow / 1e5) : "", `${range ? range.label + " " : "记录到 "}${plays.length} 次游玩`].filter(Boolean).join("　·　"), HW - HP, 128);
 ctx.textAlign = "left";
 let y = 170;
 const CHART_MIN = 940000;
@@ -1562,7 +1775,8 @@ lineChart(ctx, HP, y, HW - HP * 2, 400, [
 } else if (!shownPb.length) {
 placeholder("还没有 AAA（940,000）以上的成绩，曲线图只画 AAA 以上的成绩");
 } else {
-placeholder(`目前只记录到 1 个最佳分数（${best.toLocaleString("en-US")}），还没有可画的变化；分数提升、或プレイ履歴里出现游玩后就能画出曲线`);
+placeholder(range ? `这段时间里没有可画的变化（最佳 ${best.toLocaleString("en-US")}）`
+: `目前只记录到 1 个最佳分数（${best.toLocaleString("en-US")}），还没有可画的变化；分数提升、或プレイ履歴里出现游玩后就能画出曲线`);
 }
 y += 430;
 histSection(ctx, "推分记录", y, C["SSS+"]);
@@ -1570,7 +1784,7 @@ y += 64;
 if (!mine.length) {
 ctx.fillStyle = C.muted;
 ctx.font = f(700, 15);
-ctx.fillText("还没有这首歌的推分记录", HP, y);
+ctx.fillText(range ? "这段时间里没有这首歌的推分" : "还没有这首歌的推分记录", HP, y);
 }
 mine.forEach((u) => {
 ctx.fillStyle = C.muted;
@@ -1594,7 +1808,7 @@ y += 64;
 if (!rows.length) {
 ctx.fillStyle = C.muted;
 ctx.font = f(700, 15);
-ctx.fillText("还没有这首歌的プレイ履歴记录（只有成绩扫描的数据）", HP, y);
+ctx.fillText(range ? "这段时间里没有这首歌的游玩记录" : "还没有这首歌的プレイ履歴记录（只有成绩扫描的数据）", HP, y);
 }
 const pbAt = new Map(), stAt = new Map();
 let run = -1, rs = blankState();
@@ -1804,24 +2018,33 @@ if (frame) desc.push($("oc-frame").selectedOptions[0].text);
 if (onlyPlayed) desc.push("只看已游玩");
 return desc;
 }
-let histRange = { preset: "last" };
-const dayStr = (d) => `${d.getFullYear()}/${pad2(d.getMonth() + 1)}/${pad2(d.getDate())}`;
-const daysAgo = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return dayStr(d); };
-function rangeOf(r) {
-const snaps = hist.snaps;
-if (r.preset === "last") {
-const prev = snaps[snaps.length - 2];
-return prev ? { from: prev.t, fromExcl: true, label: `上次查询以来（${prev.t} 之后）` } : { label: "全部" };
+const RANGE_PRESETS = [["since", "上次以来", null], ["today", "今天", 0], ["7d", "最近 7 天", 6], ["30d", "最近 30 天", 29], ["all", "全部", null]];
+const shiftDay = (ymd, n) => {
+const [y, m, d] = ymd.split("/").map(Number);
+const dt = new Date(y, m - 1, d + n);
+return `${dt.getFullYear()}/${pad2(dt.getMonth() + 1)}/${pad2(dt.getDate())}`;
+};
+const addMinute = (t) => {
+const d = new Date(timeMs(t) + 60000);
+return `${d.getFullYear()}/${pad2(d.getMonth() + 1)}/${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+};
+function rangeOf(sel) {
+if (!sel || sel.kind === "all") return null;
+if (sel.kind === "since") {
+const runs = [...new Set([...(hist.scans || []).map((x) => x.split("|")[0]), ...hist.snaps.map((x) => x.t)])].sort();
+if (runs.length < 2) return null;
+return { from: addMinute(runs[runs.length - 2]), to: runs[runs.length - 1], label: "上次以来" };
 }
-if (r.preset === "today") return { from: daysAgo(0) + " 00:00", to: daysAgo(0) + " 23:59", label: "今天" };
-if (r.preset === "d7") return { from: daysAgo(6) + " 00:00", label: "最近 7 天" };
-if (r.preset === "d30") return { from: daysAgo(29) + " 00:00", label: "最近 30 天" };
-if (r.preset === "custom") {
-const a = (r.a || "").replace(/-/g, "/"), b = (r.b || "").replace(/-/g, "/");
-return { from: a ? a + " 00:00" : "", to: b ? b + " 23:59" : "", label: `${a || "开始"} – ${b || "现在"}` };
+if (sel.kind === "custom" && sel.from && sel.to) {
+return { from: sel.from + " 00:00", to: sel.to + " 23:59", label: sel.from === sel.to ? sel.from.slice(5) : sel.from.slice(5) + "–" + sel.to.slice(5) };
 }
-return { label: "全部" };
+const p = RANGE_PRESETS.find((x) => x[0] === sel.kind);
+if (!p || p[2] == null) return null;
+const today = nowStr().slice(0, 10);
+return { from: shiftDay(today, -p[2]) + " 00:00", to: today + " 23:59", label: p[1] };
 }
+const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
 async function renderHistory(seq) {
 view.innerHTML = "";
 const card = (css) => {
@@ -1858,38 +2081,60 @@ if (o.src === "p") e.plays++;
 if (o.t > e.last) e.last = o.t;
 songs.set(o.k, e);
 });
+let rangeSel = lsGet("ongeki-histRange", { kind: "since" });
+if (!rangeSel || (rangeSel.kind !== "custom" && !RANGE_PRESETS.some((x) => x[0] === rangeSel.kind))) rangeSel = { kind: "since" };
+let onlyRated = !!lsGet("ongeki-onlyRated", false);
 const rangeCard = card();
 rangeCard.innerHTML = '<b>时间段</b><div id="oc-rp" style="display:flex;flex-wrap:wrap;gap:6px;margin:6px 0"></div>' +
-'<div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px">' +
-'<input id="oc-ra" type="date" style="font-size:16px;padding:4px"> 〜 <input id="oc-rb" type="date" style="font-size:16px;padding:4px"></div>';
+'<div id="oc-rd" style="display:flex;flex-wrap:wrap;align-items:center;gap:6px">自选 ' +
+'<input id="oc-ra" type="date" style="font-size:16px;padding:4px"> 〜 <input id="oc-rb" type="date" style="font-size:16px;padding:4px"></div>' +
+'<label style="display:flex;align-items:center;gap:6px;margin-top:6px"><input id="oc-or" type="checkbox" style="width:18px;height:18px;margin:0"> 推分只看账号 Rating 有变化的</label>';
 const trendBox = card("padding:0;background:none");
 const presetBox = rangeCard.querySelector("#oc-rp");
 const ra = rangeCard.querySelector("#oc-ra"), rb = rangeCard.querySelector("#oc-rb");
-if (hist.since) ra.min = rb.min = hist.since.slice(0, 10).replace(/\//g, "-");
-ra.value = histRange.a || ""; rb.value = histRange.b || "";
+const toInput = (ymd) => ymd.replace(/\//g, "-");
 const presetBtns = {};
-const showTrend = async () => {
+const paintRange = () => {
 for (const [k, b] of Object.entries(presetBtns)) {
-b.style.background = k === histRange.preset ? "#d1127a" : "#fff";
-b.style.color = k === histRange.preset ? "#fff" : "#222";
+b.style.background = k === rangeSel.kind ? "#d1127a" : "#fff";
+b.style.color = k === rangeSel.kind ? "#fff" : "#222";
 }
-const r = rangeOf(histRange);
-const key = JSON.stringify(r);
+applyBtn.style.background = rangeSel.kind === "custom" ? "#d1127a" : "#fff";
+applyBtn.style.color = rangeSel.kind === "custom" ? "#fff" : "#222";
+const r = rangeOf(rangeSel);
+ra.value = toInput(r ? r.from.slice(0, 10) : (hist.since || nowStr()).slice(0, 10));
+rb.value = toInput(r ? r.to.slice(0, 10) : nowStr().slice(0, 10));
+};
+const showTrend = async () => {
+paintRange();
+const r = rangeOf(rangeSel);
+const key = JSON.stringify([r, onlyRated]);
 imageCache.trend = imageCache.trend || {};
 trendBox.textContent = "正在生成走势图…";
 try {
-const img = imageCache.trend[key] = imageCache.trend[key] || (await drawTrend(r));
+const img = imageCache.trend[key] = imageCache.trend[key] || (await drawTrend(r, onlyRated));
 if (seq === renderSeq) showImage(img, `ongeki_history_${stamp}.png`, trendBox);
 } catch (err) {
 trendBox.textContent = "走势图生成失败：" + err;
 }
 };
-for (const [k, label] of [["last", "上次以来"], ["today", "今天"], ["d7", "最近 7 天"], ["d30", "最近 30 天"], ["all", "全部"]]) {
-presetBtns[k] = mkBtn(label, () => { histRange = { preset: k }; ra.value = rb.value = ""; showTrend(); }, presetBox);
-}
-const onDate = () => { histRange = { preset: "custom", a: ra.value, b: rb.value }; showTrend(); };
-ra.onchange = onDate;
-rb.onchange = onDate;
+let openCurve = null, showCurve = null; // 打开着的单曲曲线：切换时间段时重画
+const setRange = (sel) => {
+rangeSel = sel;
+lsSet("ongeki-histRange", sel);
+showTrend();
+if (openCurve) showCurve(openCurve, false);
+};
+for (const [k, label] of RANGE_PRESETS) presetBtns[k] = mkBtn(label, () => setRange({ kind: k }), presetBox);
+const applyBtn = mkBtn("应用", () => {
+let a = ra.value.replace(/-/g, "/"), b = rb.value.replace(/-/g, "/");
+if (!a || !b) { alert("请选择开始和结束日期"); return; }
+if (a > b) [a, b] = [b, a];
+setRange({ kind: "custom", from: a, to: b });
+}, rangeCard.querySelector("#oc-rd"));
+const orBox = rangeCard.querySelector("#oc-or");
+orBox.checked = onlyRated;
+orBox.onchange = () => { onlyRated = orBox.checked; lsSet("ongeki-onlyRated", onlyRated); showTrend(); };
 const search = card();
 search.innerHTML = '<b>单曲分数曲线</b><input id="oc-hq" placeholder="输入曲名搜索" autocomplete="off" ' +
 'style="display:block;width:100%;box-sizing:border-box;margin:6px 0;padding:6px 8px;font-size:16px"><div id="oc-hlist"></div>';
@@ -1909,17 +2154,24 @@ b.style.cssText = "display:flex;width:100%;align-items:center;gap:6px;text-align
 b.innerHTML = `<span style="background:${C[e.d] || "#999"};color:#16151c;border-radius:4px;padding:0 5px;font-size:12px;font-weight:bold">${DIFF_SHORT[e.d] || e.d}</span>` +
 `<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(nameOfKey(e.k, e.n))}</span>` +
 `<span style="color:#777;font-size:12px">${(pb[e.k] || 0).toLocaleString("en-US")} · ${e.plays} 次</span>`;
-b.onclick = async () => {
-curveBox.style.display = "";
-curveBox.textContent = "正在生成…";
-curveBox.scrollIntoView({ behavior: "smooth", block: "start" });
-try {
-showImage(await drawSongCurve(e), `ongeki_${e.n.replace(/[\\/:*?"<>|\s]+/g, "_").slice(0, 40)}_${stamp}.png`, curveBox);
-} catch (err) {
-curveBox.textContent = "生成失败：" + err;
+b.onclick = () => showCurve(e, true);
+listEl.appendChild(b);
 }
 };
-listEl.appendChild(b);
+let curveSeq = 0;
+showCurve = async (e, scroll) => {
+const my = ++curveSeq; // 连续点了几首时，只显示最后点的那首
+openCurve = e;
+curveBox.style.display = "";
+curveBox.textContent = "正在生成…";
+if (scroll) curveBox.scrollIntoView({ behavior: "smooth", block: "start" });
+try {
+const img = await drawSongCurve(e, rangeOf(rangeSel));
+if (my !== curveSeq || seq !== renderSeq) return;
+showImage(img, `ongeki_${e.n.replace(/[\\/:*?"<>|\s]+/g, "_").slice(0, 40)}_${stamp}.png`, curveBox);
+mkBtn("收起", () => { openCurve = null; curveSeq++; curveBox.style.display = "none"; search.scrollIntoView({ block: "start" }); }, curveBox.firstChild);
+} catch (err) {
+if (my === curveSeq) curveBox.textContent = "生成失败：" + err;
 }
 };
 search.querySelector("#oc-hq").oninput = renderList;
