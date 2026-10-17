@@ -1006,7 +1006,7 @@ Object.assign(res, { pEntered: r.entered, pIn: r.inFrame, pOut: r.out, pOutV: r.
 }
 res.dParts = parts(st).map((x, j) => x - p0[j]);
 res.exact = (units(st) - u0) / 50 / 1e5;
-steps.push({ u, res, d: res.dParts.reduce((a, x) => a + x, 0) });
+steps.push({ u, res, d: Math.max(0, res.dParts.reduce((a, x) => a + x, 0)) });
 });
 const total = steps.reduce((a, x) => a + x.d, 0);
 const gap = rOf(next) != null && rOf(prev) != null ? rOf(next) - (base + offset + total) : 0;
@@ -1399,7 +1399,7 @@ const sameDay = !!range && range.from.slice(0, 10) === range.to.slice(0, 10);
 const nameOf = new Map();
 allSnaps.forEach((sn) => [...sn.best, ...sn.news, ...(sn.ps || [])].forEach((e) => nameOf.set(e[0], e[1])));
 hist.obs.forEach((o) => nameOf.set(o.k, o.n));
-const rated = (u) => { const im = impact.get(u); return !!im && (im.delta || 0) !== 0; };
+const rated = (u) => { const im = impact.get(u); return !!im && (im.delta || 0) > 0; };
 const rows = []; // {side:'L'|'R', e, p, color, right, sub}
 let upMore = 0;
 if (range) {
@@ -1715,7 +1715,7 @@ const obs = hist.obs.filter((o) => o.k === e.k).sort(byTime);
 const plays = obs.filter((o) => o.src === "p" && inRange(o.t));
 const { state, updates } = derive(hist);
 const impact = accountImpact(hist, updates);
-const mine = updates.filter((u) => u.k === e.k && inRange(u.t) && (!onlyRated || (impact.get(u)?.delta || 0) !== 0)).reverse().slice(0, 12);
+const mine = updates.filter((u) => u.k === e.k && inRange(u.t) && (!onlyRated || (impact.get(u)?.delta || 0) > 0)).reverse().slice(0, 12);
 const cur = state[e.k];
 const pbPts = [];
 let best = -1;
