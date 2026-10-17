@@ -1399,6 +1399,7 @@ const sameDay = !!range && range.from.slice(0, 10) === range.to.slice(0, 10);
 const nameOf = new Map();
 allSnaps.forEach((sn) => [...sn.best, ...sn.news, ...(sn.ps || [])].forEach((e) => nameOf.set(e[0], e[1])));
 hist.obs.forEach((o) => nameOf.set(o.k, o.n));
+const rated = (u) => { const im = impact.get(u); return !!im && (im.delta || 0) !== 0; };
 const rows = []; // {side:'L'|'R', e, p, color, right, sub}
 let upMore = 0;
 if (range) {
@@ -1411,9 +1412,11 @@ updates.filter((u) => inRange(u.t)).forEach((u) => {
 const im = impact.get(u);
 if (!im) return;
 const rp = ratingPair(u);
+const ok = rated(u);
 if (im.inFrame) {
 const en = entry("t|" + u.k, !im.entered);
 en.end = true;
+if (ok) en.rated = true;
 if (en.before == null && !im.entered && rp.r0 != null) en.before = rp.r0;
 en.after = rp.r1;
 if (!en.n) {
@@ -1426,17 +1429,18 @@ en.s1 = u.after.s;
 if (u.after.has.l) en.l1 = u.after.l;
 if (u.after.fb) en.fb1 = 1;
 }
-if (im.out) { const en = entry("t|" + im.out, true); en.end = false; if (en.after == null) en.after = im.outV / 100; }
+if (im.out) { const en = entry("t|" + im.out, true); en.end = false; if (ok) en.rated = true; if (en.after == null) en.after = im.outV / 100; }
 if (im.pIn) {
 const en = entry("p|" + u.k, !im.pEntered);
 en.end = true;
+if (ok) en.rated = true;
 if (en.before == null && !im.pEntered && rp.p0 != null) en.before = rp.p0;
 en.after = rp.p1;
 if (en.st0 == null) en.st0 = u.before && u.before.has.ps ? u.before.st : 0;
 en.st1 = u.after.st;
 en.n++;
 }
-if (im.pOut) { const en = entry("p|" + im.pOut, true); en.end = false; if (en.after == null) en.after = im.pOutV; }
+if (im.pOut) { const en = entry("p|" + im.pOut, true); en.end = false; if (ok) en.rated = true; if (en.after == null) en.after = im.pOutV; }
 });
 const ups = [];
 mem.forEach((en, id) => {
@@ -1444,7 +1448,7 @@ const p = id[0] === "p", k = id.slice(2);
 const e = [k, nameOf.get(k) || k];
 const val = (v) => (p ? "P " + fmtPs(v / 1e5) : m3(v));
 const sub = p ? (en.st1 != null && en.st1 > (en.st0 || 0) ? `☆${en.st0 || 0}→☆${en.st1}` : "") : en.n ? firstLast(en) : "";
-if (en.after == null) return;
+if (en.after == null || (onlyRated && !en.rated)) return;
 if (!en.start && en.end) rows.push({ side: "L", e, p, color: GOOD, right: "新进 " + val(en.after), sub });
 else if (en.start && !en.end) rows.push({ side: "R", e, p, color: "#ff8a8a", right: "移出 " + val(en.after) });
 else if (en.start && en.end) ups.push({ e, p, en, sub, val, dr: en.after - (en.before == null ? en.after : en.before) });
@@ -1462,8 +1466,18 @@ sub,
 } else if (hasPrev) {
 const toMap = (s) => new Map([...s.best, ...s.news].map((e) => [e[0], e]));
 const a = toMap(prev), b = toMap(last);
+const ratedIds = new Set();
+updates.filter((u) => u.t > prev.t && u.t <= last.t && rated(u)).forEach((u) => {
+const im = impact.get(u);
+if (im.inFrame) ratedIds.add("t|" + u.k);
+if (im.out) ratedIds.add("t|" + im.out);
+if (im.pIn) ratedIds.add("p|" + u.k);
+if (im.pOut) ratedIds.add("p|" + im.pOut);
+});
+const keep = (id) => !onlyRated || ratedIds.has(id);
 const ups = [];
 b.forEach((e, k) => {
+if (!keep("t|" + k)) return;
 const o = a.get(k);
 if (!o) { rows.push({ side: "L", e, color: GOOD, right: "新进" + (e[3] != null ? " " + m3(e[3]) : " " + e[2].toLocaleString("en-US")) }); return; }
 const why = [];
@@ -1482,20 +1496,20 @@ right: dr == null ? e[2].toLocaleString("en-US") : dr > 0 ? `${m3(e[3] - dr)} �
 sub: why.join(" · "),
 }));
 a.forEach((e, k) => {
-if (!b.has(k)) rows.push({ side: "R", e, color: "#ff8a8a", right: "移出" + (e[3] != null ? " " + m3(e[3]) : " " + e[2].toLocaleString("en-US")) });
+if (!b.has(k) && keep("t|" + k)) rows.push({ side: "R", e, color: "#ff8a8a", right: "移出" + (e[3] != null ? " " + m3(e[3]) : " " + e[2].toLocaleString("en-US")) });
 });
 if (prev.ps && last.ps) {
 const pa = new Map(prev.ps.map((e) => [e[0], e])), pb2 = new Map(last.ps.map((e) => [e[0], e]));
 pb2.forEach((e, k) => {
+if (!keep("p|" + k)) return;
 const o = pa.get(k);
 if (!o) rows.push({ side: "L", e, p: true, color: GOOD, right: `新进 ☆${e[2]} P ${fmtPs(e[3] / 1e5)}` });
 else if (e[2] > o[2]) rows.push({ side: "L", e, p: true, color: C.plat, right: `☆${o[2]}→☆${e[2]}  P ${fmtPs(o[3] / 1e5)} → ${fmtPs(e[3] / 1e5)}` });
 });
-pa.forEach((e, k) => { if (!pb2.has(k)) rows.push({ side: "R", e, p: true, color: "#ff8a8a", right: `移出 P ${fmtPs(e[3] / 1e5)}` }); });
+pa.forEach((e, k) => { if (!pb2.has(k) && keep("p|" + k)) rows.push({ side: "R", e, p: true, color: "#ff8a8a", right: `移出 P ${fmtPs(e[3] / 1e5)}` }); });
 }
 }
 const inRAll = updates.filter((u) => inRange(u.t));
-const rated = (u) => { const im = impact.get(u); return !!im && (im.delta || 0) !== 0; };
 const inR = onlyRated ? inRAll.filter(rated) : inRAll;
 const hiddenN = inRAll.length - inR.length;
 const RECENT_MAX = range ? 30 : 20;
