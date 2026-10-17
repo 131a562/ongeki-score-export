@@ -983,10 +983,16 @@ const nextIn = hasRows(next) ? { news: keys(next.news) || new Set(), best: keys(
 const st = fromSnap(prev);
 const base = parts(st).reduce((a, x) => a + x, 0);
 const offset = rOf(prev) != null ? rOf(prev) - base : 0;
-const place = (fk, k, v, cap) => {
+const lastPush = new Map();
+list.forEach((u) => {
+if (u.changes.some((x) => x.type === "ts" || x.type === "lamp" || x.type === "fb")) lastPush.set("t|" + u.k, u);
+if (u.changes.some((x) => x.type === "star")) lastPush.set("p|" + u.k, u);
+});
+const place = (fk, u, v, cap) => {
+const k = u.k;
 const inNext = nextIn && nextIn[fk] ? nextIn[fk].has(k) : null;
 if (inNext === false && !st[fk].has(k)) return { entered: false, inFrame: false };
-return put(st[fk], k, v, cap, inNext === true);
+return put(st[fk], k, v, cap, inNext === true && lastPush.get((fk === "ps" ? "p|" : "t|") + k) === u);
 };
 const steps = []; // [{u, res, d}]  d = 账号 Rating 显示值的变化（0.001 单位）
 list.forEach((u) => {
@@ -996,11 +1002,11 @@ if (c.is_bonus) { steps.push({ u, res: { bonus: true }, d: 0 }); return; }
 const p0 = parts(st), u0 = units(st);
 const res = { frame: c.is_new ? "NEW10" : "BEST50" };
 if (u.changes.some((x) => x.type === "ts" || x.type === "lamp" || x.type === "fb")) {
-Object.assign(res, place(c.is_new ? "news" : "best", u.k, tsMilliOf(u.k, u.after) * 100, c.is_new ? 10 : 50));
+Object.assign(res, place(c.is_new ? "news" : "best", u, tsMilliOf(u.k, u.after) * 100, c.is_new ? 10 : 50));
 }
 if (u.changes.some((x) => x.type === "star")) {
 if (st.ps) {
-const r = place("ps", u.k, psUnitsOf(u.k, u.after), 50);
+const r = place("ps", u, psUnitsOf(u.k, u.after), 50);
 Object.assign(res, { pEntered: r.entered, pIn: r.inFrame, pOut: r.out, pOutV: r.outV });
 } else res.pUnknown = true;
 }
@@ -1594,7 +1600,7 @@ lineChart(ctx, HP, y, HW - HP * 2, 360, [
 if (daily.length === 1) chartNote("目前只有 1 天的记录，以后每天运行一次就能连成线");
 }
 y += 380;
-histSection(ctx, "B50 / P-SCORE50 变化" + (range ? `（${range.label}）` : hasPrev ? `（对比 ${prev.t}）` : ""), y, C.accent);
+histSection(ctx, "NEW10 / BEST50 / P-SCORE50 变化" + (range ? `（${range.label}）` : hasPrev ? `（对比 ${prev.t}）` : ""), y, C.accent);
 ctx.textAlign = "right";
 if (range && startR != null && endR != null) {
 const dr = endR - startR;
@@ -1645,7 +1651,7 @@ ctx.fillStyle = C.muted;
 ctx.fillText("还没有上一次的快照可以对比", HP, y);
 } else if (!rows.length) {
 ctx.fillStyle = C.muted;
-ctx.fillText(range ? "这段时间里 B50 / P-SCORE50 没有变化" : "和上次相比没有变化", HP, y);
+ctx.fillText(range ? "这段时间里 NEW10 / BEST50 / P-SCORE50 没有变化" : "和上次相比没有变化", HP, y);
 } else {
 let yy = y;
 rows.filter((r) => r.side === "L").forEach((r) => { yy += rowText(HP, yy, r); });
