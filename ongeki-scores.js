@@ -1,6 +1,9 @@
 (async () => {
 const NET = "https://ongeki-net.com/ongeki-mobile";
-const CONST_URL = "https://reiwa.f5.si/ongeki_record.json";
+const CONST_URLS = [
+"https://131a562.github.io/sbga-tool/data/feed/ongeki_record.json",
+"https://reiwa.f5.si/ongeki_record.json",
+];
 const SYNC_URL_RAW = "https://otoge-sync.131a562-index01.workers.dev"; // build.js 替换为 config.json 的 syncUrl
 const SYNC_URL = /^https?:\/\//.test(SYNC_URL_RAW) ? SYNC_URL_RAW : "";
 const DIFFS = [
@@ -109,11 +112,18 @@ return songs;
 let sampleHtml = ""; // 调试用：一首歌在成绩页上的原始 HTML
 log("正在读取谱面定数表 ...");
 let constData = [];
+for (const [i, url] of CONST_URLS.entries()) {
 try {
-constData = await (await fetch(CONST_URL)).json();
-log(`✓ 定数表：${constData.length} 个谱面`);
+const r = await fetch(url);
+if (!r.ok) throw new Error("HTTP " + r.status);
+const j = await r.json();
+if (!Array.isArray(j) || j.length < 100) throw new Error("内容不对");
+constData = j;
+log(`✓ 定数表：${constData.length} 个谱面${i ? "（SBGA TOOL 读不到，用的是 reiwa.f5.si）" : ""}`);
+break;
 } catch (e) {
-log(`× 定数表读取失败（${e}），将不显示定数与 rating。`);
+if (i === CONST_URLS.length - 1) log(`× 定数表读取失败（${e}），将不显示定数与 rating。`);
+}
 }
 const constIndex = new Map();
 for (const m of constData) {
