@@ -6,6 +6,8 @@ const CONST_URLS = [
 ];
 const SYNC_URL_RAW = "https://otoge-sync.131a562-index01.workers.dev"; // build.js 替换为 config.json 的 syncUrl
 const SYNC_URL = /^https?:\/\//.test(SYNC_URL_RAW) ? SYNC_URL_RAW : "";
+const DASH_SRC = "https://131a562.github.io/sbga-dashboard/src/";
+const sharedLoading = Promise.all(["draw-ongeki.js", "sync.js"].map((f) => import(`${DASH_SRC}${f}?t=${Date.now()}`))).catch((e) => e);
 const DIFFS = [
 { id: 2, name: "EXPERT", key: "EXP" },
 { id: 3, name: "MASTER", key: "MAS" },
@@ -324,18 +326,15 @@ row.avg_ts = played.length
 : 0;
 return row;
 });
+const shared = await sharedLoading;
+if (shared instanceof Error) {
+log(`× 读不到 SBGA DASHBOARD 的 draw-ongeki.js / sync.js：${shared.message}`);
+return;
+}
+const [draw, syncLib] = shared;
+const { C, f, rrect, fit, pill, constPill, drawStars, fmtPs, DIFF_SHORT } = draw;
 const JACKET_URL = "https://reiwa.f5.si/jackets/ongeki/";
-const IMG = { W: 1800, PAD: 28, COLS: 5, GAP: 10, CH: 124, HEAD: 168, SEC: 44, FOOT: 40, MAX_CARDS: 150 };
-IMG.CW = Math.floor((IMG.W - IMG.PAD * 2 - IMG.GAP * (IMG.COLS - 1)) / IMG.COLS);
-const FONT = `"Hiragino Sans","Hiragino Kaku Gothic ProN","PingFang SC","Noto Sans CJK JP","Microsoft YaHei",sans-serif`;
-const C = {
-bg: "#16151c", card: "#24222d", line: "#3a3745", fg: "#f3f1f8", muted: "#9d99ab", accent: "#ff5aa8", plat: "#7fe0ff",
-BASIC: "#3fbf6f", ADVANCED: "#f2a33a", EXPERT: "#e5484d", MASTER: "#9a5cf0", LUNATIC: "#e8e5f0",
-"SSS+": "#ffd36b", SSS: "#ffc94a", SS: "#f0b43c", S: "#e3a53a",
-"AB+": "#ff7ab8", AB: "#ffb347", FC: "#4fc3f7", FB: "#ffe066", star: "#ffd36b",
-};
-const DIFF_SHORT = { BASIC: "BAS", ADVANCED: "ADV", EXPERT: "EXP", MASTER: "MAS", LUNATIC: "LUN" };
-const f = (w, px) => `${w} ${px}px ${FONT}`;
+const MAX_CARDS = 150; // 查分图最多画几首
 const jacketCache = new Map();
 function loadJacket(id) {
 if (!id) return Promise.resolve(null);
@@ -351,295 +350,14 @@ img.src = JACKET_URL + id + ".webp";
 }
 return jacketCache.get(id);
 }
-function rrect(ctx, x, y, w, h, r) {
-ctx.beginPath();
-ctx.moveTo(x + r, y);
-ctx.arcTo(x + w, y, x + w, y + h, r);
-ctx.arcTo(x + w, y + h, x, y + h, r);
-ctx.arcTo(x, y + h, x, y, r);
-ctx.arcTo(x, y, x + w, y, r);
-ctx.closePath();
-}
-function fit(ctx, text, maxW) {
-if (ctx.measureText(text).width <= maxW) return text;
-let t = text;
-while (t.length > 1 && ctx.measureText(t + "…").width > maxW) t = t.slice(0, -1);
-return t + "…";
-}
-function pill(ctx, text, x, y, color, px = 12, ink = "#16151c") {
-ctx.font = f(800, px);
-const w = ctx.measureText(text).width + px;
-rrect(ctx, x, y - px - 2, w, px + 7, 4);
-ctx.fillStyle = color;
-ctx.fill();
-ctx.fillStyle = ink;
-ctx.fillText(text, x + px / 2, y + 1);
-return w;
-}
-function constPill(ctx, s, x, y, color, px = 12) {
-const ink = "#16151c";
-const head = `${s.remaster ? "Re:M" : DIFF_SHORT[s.difficulty] || ""} `;
-let intPart = "?", tail = "";
-if (s.const != null) {
-const [i, d] = s.const.toFixed(1).split(".");
-intPart = i;
-tail = "." + d;
-}
-if (s.const_unknown) tail += "?";
-const plus = s.level.endsWith("+");
-const big = f(800, px), small = f(800, Math.round(px * 0.75));
-ctx.font = big;
-const wHead = ctx.measureText(head + intPart).width, wTail = ctx.measureText(tail).width;
-ctx.font = small;
-const wPlus = plus ? ctx.measureText("+").width + 1 : 0;
-const w = wHead + wPlus + wTail + px;
-rrect(ctx, x, y - px - 2, w, px + 7, 4);
-ctx.fillStyle = color;
-ctx.fill();
-ctx.fillStyle = ink;
-let tx = x + px / 2;
-ctx.font = big;
-ctx.fillText(head + intPart, tx, y + 1);
-tx += wHead;
-if (plus) {
-ctx.font = small;
-ctx.fillText("+", tx, y + 1 - px * 0.42); // 右上角
-tx += wPlus;
-}
-ctx.font = big;
-ctx.fillText(tail, tx, y + 1);
-return w;
-}
-function drawStars(ctx, n, right, baseline, size = 11, gap = 2) {
-const total = 5 * size + 4 * gap;
-for (let i = 0; i < 5; i++) {
-const cx = right - total + i * (size + gap) + size / 2, cy = baseline - size / 2;
-ctx.beginPath();
-for (let k = 0; k < 10; k++) {
-const r = k % 2 ? size * 0.22 : size / 2;
-const a = -Math.PI / 2 + (k * Math.PI) / 5;
-ctx[k ? "lineTo" : "moveTo"](cx + r * Math.cos(a), cy + r * Math.sin(a));
-}
-ctx.closePath();
-ctx.fillStyle = i < Math.min(n, 5) ? C.star : C.line;
-ctx.fill();
-}
-return total;
-}
-function drawCard(ctx, s, label, x, y, jacket, mode) {
-const { CW, CH } = IMG;
-rrect(ctx, x, y, CW, CH, 10);
-ctx.fillStyle = C.card;
-ctx.fill();
-ctx.save();
-rrect(ctx, x, y, CW, CH, 10);
-ctx.clip();
-if (jacket) ctx.drawImage(jacket, x, y, CH, CH);
-else {
-ctx.fillStyle = C.line;
-ctx.fillRect(x, y, CH, CH);
-ctx.fillStyle = C.muted;
-ctx.font = f(700, 14);
-ctx.textAlign = "center";
-ctx.fillText("NO IMAGE", x + CH / 2, y + CH / 2 + 5);
-ctx.textAlign = "left";
-}
-ctx.fillStyle = C[s.difficulty] || C.muted;
-ctx.fillRect(x, y + CH - 6, CH, 6);
-ctx.restore();
-ctx.font = f(800, 13);
-const lw = ctx.measureText(label).width + 12;
-rrect(ctx, x + 4, y + 4, lw, 20, 5);
-ctx.fillStyle = "rgba(0,0,0,.72)";
-ctx.fill();
-ctx.fillStyle = "#fff";
-ctx.fillText(label, x + 10, y + 19);
-const L = x + CH + 10, R = x + CW - 10, TW = R - L;
-ctx.textAlign = "left";
-const text = (t, tx, ty, font, color, maxW) => {
-ctx.font = font;
-ctx.fillStyle = color;
-const s2 = maxW != null ? fit(ctx, t, Math.max(0, maxW)) : t;
-if (maxW == null || maxW > 12) ctx.fillText(s2, tx, ty);
-return ctx.measureText(s2).width;
-};
-const textR = (t, ty, font, color, maxW) => { // 右对齐，返回宽度
-ctx.font = font;
-const s2 = fit(ctx, t, maxW);
-const w = ctx.measureText(s2).width;
-if (maxW > 12) {
-ctx.fillStyle = color;
-ctx.fillText(s2, R - w, ty);
-}
-return w;
-};
-let cx = L + constPill(ctx, s, L, y + 19, C[s.difficulty] || C.muted) + 8;
-const pRank = mode === "ps" ? "" : (s.frame.match(/P\d+/) || [""])[0];
-if (pRank) textR(pRank, y + 19, f(700, 12), C.plat, R - cx);
-text(s.title, L, y + 42, f(700, 16), C.fg, TW);
-const sub = mode === "ps"
-? (s.rating > 0 ? `R ${s.rating.toFixed(3)}` : "")
-: (s.ps_rating > 0 ? `P ${fmtPs(s.ps_rating)}` : "");
-if (s.played) {
-cx = L + text(s.technical_score.toLocaleString("en-US"), L, y + 66, f(800, 18), C.fg);
-cx += 5 + text(s.rank, cx + 5, y + 66, f(800, 14), C[s.rank] || C.muted);
-} else {
-cx = L + text("未游玩", L, y + 66, f(700, 15), C.muted);
-}
-if (sub) textR(sub, y + 66, f(600, 12), mode === "ps" ? C.accent : C.plat, R - cx - 8);
-const starW = drawStars(ctx, s.platinum_star, R, y + 89);
-cx = L;
-if (s.played) {
-for (const [t, c] of [[C[s.lamp] ? s.lamp : "", C[s.lamp]], [s.full_bell ? "FB" : "", C.FB]]) {
-if (!t) continue;
-ctx.font = f(800, 11);
-if (cx + ctx.measureText(t).width + 11 > R - starW - 6) break;
-cx += pill(ctx, t, cx, y + 89, c, 11) + 4;
-}
-}
-const main = mode === "ps" ? s.ps_rating : s.rating;
-const mainW = textR(main > 0 ? (mode === "ps" ? fmtPs(main) : main.toFixed(3)) : "—", y + 115, f(800, 22),
-main > 0 ? (mode === "ps" ? C.plat : C.accent) : C.muted, TW);
-const ps = s.platinum_score
-? `PS ${s.platinum_score.toLocaleString("en-US")}${s.platinum_max ? "/" + s.platinum_max.toLocaleString("en-US") : ""}`
-: "PS —";
-text(ps, L, y + 114, f(600, 11), C.muted, TW - mainW - 8);
-}
-const SIDE = { CW: 206, CH: 62, GAP: 6, COLS: 2, MARGIN: 24 };
-SIDE.W = SIDE.CW * SIDE.COLS + SIDE.GAP * (SIDE.COLS - 1);
-function drawPCard(ctx, s, label, x, y, jacket) {
-const { CW, CH } = SIDE;
-rrect(ctx, x, y, CW, CH, 8);
-ctx.fillStyle = C.card;
-ctx.fill();
-ctx.save();
-rrect(ctx, x, y, CW, CH, 8);
-ctx.clip();
-if (jacket) ctx.drawImage(jacket, x, y, CH, CH);
-else { ctx.fillStyle = C.line; ctx.fillRect(x, y, CH, CH); }
-ctx.fillStyle = C[s.difficulty] || C.muted;
-ctx.fillRect(x, y + CH - 4, CH, 4);
-ctx.restore();
-ctx.font = f(800, 11);
-const lw = ctx.measureText(label).width + 8;
-rrect(ctx, x + 3, y + 3, lw, 16, 4);
-ctx.fillStyle = "rgba(0,0,0,.72)";
-ctx.fill();
-ctx.fillStyle = "#fff";
-ctx.fillText(label, x + 7, y + 15);
-const L = x + CH + 8, R = x + CW - 8;
-ctx.font = f(700, 13);
-ctx.fillStyle = C.fg;
-ctx.fillText(fit(ctx, s.title, R - L), L, y + 18);
-const pw = constPill(ctx, s, L, y + 37, C[s.difficulty] || C.muted, 10);
-if (s.platinum_max) {
-ctx.font = f(600, 10);
-ctx.fillStyle = C.muted;
-const pct = ((s.platinum_score / s.platinum_max) * 100).toFixed(1) + "%";
-const w = ctx.measureText(pct).width;
-if (L + pw + 6 + w <= R) ctx.fillText(pct, R - w, y + 37);
-}
-drawStars(ctx, s.platinum_star, L + 53, y + 56, 9, 2);
-ctx.font = f(800, 15);
-ctx.fillStyle = C.plat;
-const t = fmtPs(s.ps_rating);
-ctx.fillText(t, R - ctx.measureText(t).width, y + 57);
-}
 async function drawImage(title, subtitle, stats, sections, side) {
-const { PAD, COLS, GAP, CH, HEAD, SEC, FOOT, CW } = IMG;
-const mainRight = IMG.W - PAD; // 主区域（大卡片）的右边界
-const sideX = mainRight + SIDE.MARGIN;
-const W = side ? sideX + SIDE.W + PAD : IMG.W;
-const rowsOf = (n) => Math.max(1, Math.ceil(n / COLS));
-const mainH = sections.reduce((h, sec) => h + SEC + rowsOf(sec.rows.length) * (CH + GAP), 0);
-const sideH = side ? SEC + Math.ceil(side.rows.length / SIDE.COLS) * (SIDE.CH + SIDE.GAP) : 0;
-const H = HEAD + Math.max(mainH, sideH) + FOOT;
 const jackets = new Map();
 await Promise.all([...sections.flatMap((sec) => sec.rows), ...(side ? side.rows : [])]
 .map(async (s) => jackets.set(s, await loadJacket(s.img))));
-const cv = document.createElement("canvas");
-cv.width = W;
-cv.height = H;
-const ctx = cv.getContext("2d");
-ctx.fillStyle = C.bg;
-ctx.fillRect(0, 0, W, H);
-ctx.textBaseline = "alphabetic";
-ctx.fillStyle = C.accent;
-ctx.font = f(800, 16);
-ctx.fillText("O.N.G.E.K.I. Re:Fresh", PAD, 42);
-ctx.fillStyle = C.fg;
-ctx.font = f(800, 52);
-ctx.fillText(title, PAD, 100);
-ctx.font = f(500, 15);
-ctx.fillStyle = C.muted;
-ctx.fillText(fit(ctx, subtitle, 700), PAD, 132);
-const boxW = 200, boxGap = 10;
-stats.forEach(([label, value, note], i) => {
-const bx = W - PAD - (stats.length - i) * (boxW + boxGap) + boxGap;
-rrect(ctx, bx, 26, boxW, 112, 10);
-ctx.fillStyle = C.card;
-ctx.fill();
-ctx.fillStyle = C.muted;
-ctx.font = f(700, 14);
-ctx.fillText(label, bx + 14, 52);
-ctx.fillStyle = C.fg;
-ctx.font = f(800, 30);
-ctx.fillText(fit(ctx, value, boxW - 28), bx + 14, 92);
-ctx.fillStyle = C.muted;
-ctx.font = f(500, 13);
-ctx.fillText(fit(ctx, note, boxW - 28), bx + 14, 122);
+const cv = draw.drawImage({
+title, subtitle, stats, sections, side, jackets,
+footer: `${new Date().toLocaleString("ja-JP")}  ·  估算值（仅 EXP/MAS/LUN），与游戏内会有少许出入  ·  定数・曲绘：reiwa.f5.si（定数后带 "?" 为未确定）`,
 });
-if (side) {
-ctx.fillStyle = C.line;
-ctx.fillRect(sideX, HEAD + 6, SIDE.W, 1);
-ctx.fillStyle = C.fg;
-ctx.font = f(800, 20);
-ctx.fillText(side.name, sideX, HEAD + 34);
-if (side.note) {
-const nw = ctx.measureText(side.name).width;
-ctx.font = f(500, 13);
-ctx.fillStyle = C.muted;
-ctx.fillText(fit(ctx, side.note, SIDE.W - nw - 10), sideX + nw + 10, HEAD + 34);
-}
-if (!side.rows.length) {
-ctx.font = f(500, 14);
-ctx.fillStyle = C.muted;
-ctx.fillText("还没有拿到☆的谱面", sideX, HEAD + SEC + 30);
-}
-side.rows.forEach((s, i) => {
-drawPCard(ctx, s, side.label(s, i), sideX + (i % SIDE.COLS) * (SIDE.CW + SIDE.GAP),
-HEAD + SEC + Math.floor(i / SIDE.COLS) * (SIDE.CH + SIDE.GAP), jackets.get(s));
-});
-}
-let y = HEAD;
-for (const sec of sections) {
-ctx.fillStyle = C.line;
-ctx.fillRect(PAD, y + 6, mainRight - PAD, 1);
-ctx.fillStyle = C.fg;
-ctx.font = f(800, 20);
-ctx.fillText(sec.name, PAD, y + 34);
-if (sec.note) {
-const nw = ctx.measureText(sec.name).width;
-ctx.font = f(500, 15);
-ctx.fillStyle = C.muted;
-ctx.fillText(sec.note, PAD + nw + 14, y + 34);
-}
-y += SEC;
-if (!sec.rows.length) {
-ctx.font = f(500, 15);
-ctx.fillStyle = C.muted;
-ctx.fillText("没有符合条件的谱面", PAD, y + 40);
-}
-sec.rows.forEach((s, i) => {
-drawCard(ctx, s, sec.label(s, i), PAD + (i % COLS) * (CW + GAP), y + Math.floor(i / COLS) * (CH + GAP), jackets.get(s), sec.mode || "ts");
-});
-y += rowsOf(sec.rows.length) * (CH + GAP);
-}
-ctx.font = f(500, 13);
-ctx.fillStyle = C.muted;
-ctx.fillText(fit(ctx,
-`${new Date().toLocaleString("ja-JP")}  ·  估算值（仅 EXP/MAS/LUN），与游戏内会有少许出入  ·  定数・曲绘：reiwa.f5.si（定数后带 "?" 为未确定）`,
-W - PAD * 2), PAD, H - 16);
 try {
 const blob = await new Promise((resolve, reject) => {
 try {
@@ -650,7 +368,7 @@ reject(e);
 });
 return { blob, url: URL.createObjectURL(blob) };
 } catch (e) {
-if (jackets.size) {
+if ([...jackets.values()].some(Boolean)) {
 for (const k of jacketCache.keys()) jacketCache.set(k, Promise.resolve(null));
 return drawImage(title, subtitle, stats, sections, side);
 }
@@ -658,7 +376,6 @@ throw e;
 }
 }
 const stamp = new Date().toISOString().slice(0, 10);
-const fmtPs = (v) => v.toFixed(5).replace(/(\.\d{3}\d*?)0+$/, "$1");
 const avg = (arr, k) => (arr.length ? sum(arr, k) / arr.length : 0);
 const ratingStats = () => [
 ["NEW10", `+${ratingInfo.part.new10.toFixed(3)}`, `${new10.length}曲 平均 ${avg(new10, "rating").toFixed(3)} · 合计 ${ratingInfo.new10.toFixed(3)}`],
@@ -1090,63 +807,11 @@ const saveLocalHist = (h) => {
 try { localStorage.setItem(histKey(), JSON.stringify(h)); return true; } catch (e) { return false; }
 };
 const SYNC_GAME = "ongeki";
-const cleanAccount = (s) => s.normalize("NFKC").replace(/[a-z]/g, (c) => c.toUpperCase()).trim()
-.replace(/[\\/:*?"<>|#%\u0000-\u001f]+/g, "_").replace(/\s+/g, " ").replace(/^\.+/, "").slice(0, 40);
-const b64enc = (str) => {
-const bytes = new TextEncoder().encode(str);
-let bin = "";
-for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
-return btoa(bin);
-};
-const b64dec = (b64) => {
-const bin = atob(b64.replace(/\s/g, ""));
-const bytes = new Uint8Array(bin.length);
-for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-return new TextDecoder().decode(bytes);
-};
-const syncFetch = async (acc, suffix, init) => {
-let res;
-try {
-res = await fetch(SYNC_URL.replace(/\/+$/, "") + "/" + SYNC_GAME + "/" + encodeURIComponent(acc) + (suffix || ""),
-Object.assign({ cache: "no-store" }, init));
-} catch (e) {
-throw new Error("连不上同步服务");
-}
-if (res.status === 401 || res.status === 403 || res.status >= 500) throw new Error("同步服务出错（HTTP " + res.status + "）");
-return res;
-};
-const syncGet = async (acc) => {
-const res = await syncFetch(acc);
-if (res.status === 404) return { data: null, sha: null };
-if (!res.ok) throw new Error("读取失败 HTTP " + res.status);
-const j = await res.json();
-let text;
-if (j.encoding === "base64" && j.content) text = b64dec(j.content);
-else {
-const raw = await syncFetch(acc, "/raw");
-if (!raw.ok) throw new Error("读取失败 HTTP " + raw.status);
-text = await raw.text();
-}
-try { return { data: JSON.parse(text), sha: j.sha }; } catch (e) { throw new Error("云端数据损坏"); }
-};
-const syncPut = async (acc, data, sha) => {
-const body = { message: "update " + SYNC_GAME + "/" + acc + " " + nowStr(), content: b64enc(JSON.stringify(data)) };
-if (sha) body.sha = sha;
-const res = await syncFetch(acc, "", { method: "PUT", body: JSON.stringify(body), headers: { "Content-Type": "application/json" } });
-if (res.status === 409 || res.status === 422) return false;
-if (!res.ok) throw new Error("写入失败 HTTP " + res.status);
-return true;
-};
-const syncMerge = async (acc, local) => {
-for (let attempt = 0; attempt < 3; attempt++) {
-const { data, sha } = await syncGet(acc);
-if (data && !data.obs) throw new Error("云端数据格式不对，没有改动云端");
-const merged = data && data.obs ? mergeHist(normalizeKeys(migrateHist(data)), local) : local;
-if (data && JSON.stringify(data) === JSON.stringify(merged)) return merged;
-if (await syncPut(acc, merged, sha)) return merged;
-}
-throw new Error("多次写入冲突，请稍后再试");
-};
+const { cleanAccount } = syncLib;
+const { fetch: syncFetch, get: syncGet, merge: syncMerge } = syncLib.createSync(SYNC_URL, SYNC_GAME, (data, local) => {
+if (!data.obs) throw new Error("云端数据格式不对，没有改动云端");
+return mergeHist(normalizeKeys(migrateHist(data)), local);
+});
 const ACC_KEY = "ongeki-accounts"; // 这台设备上「オンゲキ玩家名 → 同步用的名字」
 const loadAccounts = () => { try { return JSON.parse(localStorage.getItem(ACC_KEY) || "{}"); } catch (e) { return {}; } };
 const saveAccounts = (a) => { try { localStorage.setItem(ACC_KEY, JSON.stringify(a)); } catch (e) {} };
@@ -2252,7 +1917,7 @@ url = imageCache.b50 = imageCache.b50 || (await b50Image());
 name = `ongeki_b50_${stamp}.png`;
 } else {
 const played = shownRows.filter((s) => s.played);
-const rows = shownRows.slice(0, IMG.MAX_CARDS);
+const rows = shownRows.slice(0, MAX_CARDS);
 const count = (r) => played.filter((s) => s.rank === r).length;
 url = await drawImage(
 `${shownRows.length} 谱面`,
