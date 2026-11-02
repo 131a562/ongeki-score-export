@@ -350,12 +350,12 @@ img.src = JACKET_URL + id + ".webp";
 }
 return jacketCache.get(id);
 }
-async function drawImage(title, subtitle, stats, sections, side) {
+async function drawImage(title, subtitle, stats, sections, side, profile) {
 const jackets = new Map();
 await Promise.all([...sections.flatMap((sec) => sec.rows), ...(side ? side.rows : [])]
 .map(async (s) => jackets.set(s, await loadJacket(s.img))));
 const cv = draw.drawImage({
-title, subtitle, stats, sections, side, jackets,
+title, subtitle, stats, sections, side, jackets, profile,
 footer: `${new Date().toLocaleString("ja-JP")}  ·  估算值（仅 EXP/MAS/LUN），与游戏内会有少许出入  ·  定数・曲绘：reiwa.f5.si（定数后带 "?" 为未确定）`,
 });
 try {
@@ -370,7 +370,7 @@ return { blob, url: URL.createObjectURL(blob) };
 } catch (e) {
 if ([...jackets.values()].some(Boolean)) {
 for (const k of jacketCache.keys()) jacketCache.set(k, Promise.resolve(null));
-return drawImage(title, subtitle, stats, sections, side);
+return drawImage(title, subtitle, stats, sections, side, profile);
 }
 throw e;
 }
@@ -382,19 +382,27 @@ const ratingStats = () => [
 ["BEST50", `+${ratingInfo.part.best50.toFixed(3)}`, `${best50.length}曲 平均 ${avg(best50, "rating").toFixed(3)} · 合计 ${ratingInfo.best50.toFixed(3)}`],
 ["P-SCORE50", `+${ratingInfo.part.ps50.toFixed(3)}`, `${ps50.length}曲 · 合计 ${fmtPs(ratingInfo.ps50)}`],
 ];
-const b50Image = () =>
-drawImage(
-official ? `Rating ${official.rating.toFixed(3)}` : `Rating ${ratingInfo.total.toFixed(3)}`,
-official
+const b50Image = () => {
+const rating = (official ? official.rating : ratingInfo.total).toFixed(3);
+const subtitle = official
 ? `游戏内 Rating（オンゲキ-NET）${official.max ? ` · MAX ${official.max.toFixed(3)}` : ""} · 本工具计算 ${ratingInfo.total.toFixed(3)}${ratingInfo.total === official.rating ? "（一致）" : `（差 ${(ratingInfo.total - official.rating > 0 ? "+" : "") + (ratingInfo.total - official.rating).toFixed(3)}）`}`
-: `新曲枠 ${ratingInfo.part.new10.toFixed(3)} + ベスト枠 ${ratingInfo.part.best50.toFixed(3)} + P-SCORE枠 ${ratingInfo.part.ps50.toFixed(3)}（各枠合计 ÷ 50 后截断）`,
+: `新曲枠 ${ratingInfo.part.new10.toFixed(3)} + ベスト枠 ${ratingInfo.part.best50.toFixed(3)} + P-SCORE枠 ${ratingInfo.part.ps50.toFixed(3)}（各枠合计 ÷ 50 后截断）`;
+return drawImage(
+`Rating ${rating}`,
+subtitle,
 ratingStats(),
 [
-{ name: "BEST50", note: `平均 ${avg(best50, "rating").toFixed(3)} · 最低 ${best50.length ? best50[best50.length - 1].rating.toFixed(3) : "—"}`, rows: best50, label: (s, i) => `B${i + 1}` },
-{ name: "NEW10", note: `${latestVersion} · 平均 ${avg(new10, "rating").toFixed(3)}`, rows: new10, label: (s, i) => `N${i + 1}` },
+{ name: "BEST50", note: `${best50.length}曲 · 平均 ${avg(best50, "rating").toFixed(3)} · 合计 ${ratingInfo.best50.toFixed(3)} · 最低 ${best50.length ? best50[best50.length - 1].rating.toFixed(3) : "—"}`, rows: best50, label: (s, i) => `B${i + 1}` },
+{ name: "NEW10", note: `${latestVersion} · ${new10.length}曲 · 平均 ${avg(new10, "rating").toFixed(3)} · 合计 ${ratingInfo.new10.toFixed(3)}`, rows: new10, label: (s, i) => `N${i + 1}` },
 ],
-{ name: "P-SCORE50", note: `合计 ${fmtPs(ratingInfo.ps50)} · 最低 ${ps50.length ? fmtPs(ps50[ps50.length - 1].ps_rating) : "—"}`, rows: ps50, label: (s, i) => `P${i + 1}` }
+{ name: "P-SCORE50", note: `${ps50.length}曲 · 合计 ${fmtPs(ratingInfo.ps50)} · 最低 ${ps50.length ? fmtPs(ps50[ps50.length - 1].ps_rating) : "—"}`, rows: ps50, label: (s, i) => `P${i + 1}` },
+{
+kicker: "O.N.G.E.K.I. Re:Fresh  ·  RATING", name: playerName.normalize("NFKC"), rating,
+stats: [["BEST50", `+${ratingInfo.part.best50.toFixed(3)}`], ["NEW10", `+${ratingInfo.part.new10.toFixed(3)}`], ["P-SCORE50", `+${ratingInfo.part.ps50.toFixed(3)}`, C.plat]],
+note: subtitle,
+}
 );
+};
 const pad2 = (n) => String(n).padStart(2, "0");
 const nowStr = () => {
 const d = new Date();
